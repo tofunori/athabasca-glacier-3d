@@ -19,8 +19,7 @@ async function loadAllAssets() {
   if (!metaRes.ok || !demRes.ok) throw new Error("Impossible de charger les données du glacier.");
 
   const meta = await metaRes.json();
-  const demBuf = await demRes.arrayBuffer();
-  const demU16 = new Uint16Array(demBuf);
+  const demU16 = new Uint16Array(await demRes.arrayBuffer());
 
   loaderSub.textContent = "Chargement de l'imagerie Sentinel-2 L2A (10 m)…";
   const texLoader = new THREE.TextureLoader();
@@ -36,54 +35,68 @@ function lerp(a, b, t) {
   return a + (b - a) * t;
 }
 
+function jenningsRainSnowElevM(taAwsC, rhPct, awsElevM = 2180, lapse = 6.5) {
+  const rh = Math.max(20, Math.min(100, rhPct));
+  const t50 = 2.6 - 0.019 * rh;
+  return awsElevM + ((taAwsC - t50) / lapse) * 1000.0;
+}
+
 function sampleEpisodeAtHour(ep, hourFloat) {
-  const hClamped = Math.max(0, Math.min(23, hourFloat));
-  const i0 = Math.floor(hClamped);
+  const h = Math.max(0, Math.min(23, hourFloat));
+  const i0 = Math.floor(h);
   const i1 = Math.min(23, i0 + 1);
-  const f = hClamped - i0;
+  const f = h - i0;
   const a = ep.hours[i0];
   const b = ep.hours[i1];
-  const maxRate = Math.max(...ep.hours.map((x) => x.depRate), 0.1);
 
   const depCum = lerp(a.depCum, b.depCum, f);
   const depRate = lerp(a.depRate, b.depRate, f);
   const deltaAlpha = lerp(a.deltaAlpha, b.deltaAlpha, f);
   const sw = lerp(a.sw, b.sw, f);
+  const lw = lerp(a.lw, b.lw, f);
+  const cloud = lerp(a.cloud, b.cloud, f);
   const ta = lerp(a.ta, b.ta, f);
   const rh = lerp(a.rh, b.rh, f);
   const u = lerp(a.u, b.u, f);
   const plume = lerp(a.plume, b.plume, f);
+  const precip = lerp(a.precip, b.precip, f);
+  const rainSnowM = lerp(a.rainSnowM, b.rainSnowM, f);
+  const snowCumMm = lerp(a.snowCumMm, b.snowCumMm, f);
   const wetFrac = lerp(a.wetFrac, b.wetFrac, f);
-  const rf = Math.max(0, -deltaAlpha * sw);
 
   return {
-    hour: hClamped,
+    hour: h,
     depCum,
     depRate,
     depCumFrac: depCum / Math.max(ep.dailyDepMgM2, 0.1),
-    depRateNorm: depRate / maxRate,
     deltaAlpha,
-    rf,
     sw,
+    lw,
+    cloud,
     ta,
     rh,
     u,
     plume,
+    precip,
+    rainSnowM,
+    snowCumMm,
     wetFrac,
   };
 }
 
-function describePhase(epId, s) {
-  if (s.hour < 6) return "Nuit · advection résiduelle";
-  if (epId === "2018-08-26") {
-    if (s.wetFrac > 0.55) return "Lessivage humide · pic de dépôt (HR ~98 %)";
-    if (s.plume > 0.65) return "Panache dense · atténuation solaire (SW↓ < 200 W m⁻²)";
-    return "Arrivée du panache de fumée de C.-B.";
-  } else {
-    if (s.hour >= 11 && s.hour <= 18) return "Pic de dépôt sec · panache épais sans neige";
-    if (s.hour > 18) return "Accumulation de fin de journée · surface assombrie";
-    return "Transport matinal de fumée vers les Rocheuses";
+function describePhase(epId, s, labMode) {
+  if (labMode) return "Mode laboratoire météo (forçages manuels)";
+  if (s.hour < 6.0) return "Nuit · refroidissement et vent catabatique";
+  if (epId === "2018-08-22") return "Ciel alpin pur · rayonnement solaire maximal";
+  if (epId === "2023-08-31") {
+    if (s.hour >= 11 && s.hour <= 18) return "Fumée sèche dense · zéro neige fraîche";
+    return "Transport de fumée sur le champ de glace";
   }
+  // 2018-08-26: full meteorological progression!
+  if (s.precip >= 0.4 && s.rainSnowM <= 2300) return "Neige jusqu'au bas du glacier · blanchiment";
+  if (s.precip >= 0.4) return `Pluie en bas / Neige > ${Math.round(s.rainSnowM)} m · lessivage`;
+  if (s.plume > 0.6) return "Panache dense · forte atténuation solaire";
+  return "Arrivée de la fumée et du front humide";
 }
 
 function formatHour(h) {
@@ -124,36 +137,57 @@ async function boot() {
     return { el, lm };
   });
 
-  // App UI state
+  // App state
   let currentEpId = "2018-08-26";
-  let currentHour = 10.5;
+  let currentHour = 13.0;
   let playing = true;
   const speeds = [1, 2, 4];
   let speedIdx = 0;
   let showLabels = true;
+  let chartMetric = "depRate";
+
+  // Live manual Weather Lab overrides (null = driven by real hourly episode!)
+  let labActive = false;
+  const lab = { smoke: 0.5, sw: 350, precip: 0.0, ta: 3.5, wind: 5.0 };
 
   // DOM refs
   const timeSlider = document.getElementById("timeSlider");
   const histBars = document.getElementById("histBars");
   const clockTime = document.getElementById("clockTime");
   const clockPhase = document.getElementById("clockPhase");
-  const kpiDepCum = document.getElementById("kpiDepCum");
-  const kpiDepRate = document.getElementById("kpiDepRate");
-  const kpiDeltaAlpha = document.getElementById("kpiDeltaAlpha");
-  const kpiRF = document.getElementById("kpiRF");
-  const kpiMet = document.getElementById("kpiMet");
-  const kpiTemp = document.getElementById("kpiTemp");
+  const kpiSw = document.getElementById("kpiSw");
+  const kpiLw = document.getElementById("kpiLw");
+  const kpiTempIso = document.getElementById("kpiTempIso");
+  const kpiPrecip = document.getElementById("kpiPrecip");
+  const kpiWindRh = document.getElementById("kpiWindRh");
+  const kpiDep = document.getElementById("kpiDep");
   const modalProvenance = document.getElementById("modalProvenance");
+
+  const slLabSmoke = document.getElementById("slLabSmoke");
+  const slLabSw = document.getElementById("slLabSw");
+  const slLabPrecip = document.getElementById("slLabPrecip");
+  const slLabTemp = document.getElementById("slLabTemp");
+  const slLabWind = document.getElementById("slLabWind");
+  const valLabSmoke = document.getElementById("valLabSmoke");
+  const valLabSw = document.getElementById("valLabSw");
+  const valLabPrecip = document.getElementById("valLabPrecip");
+  const valLabTemp = document.getElementById("valLabTemp");
+  const valLabWind = document.getElementById("valLabWind");
+  const btnSyncAws = document.getElementById("btnSyncAws");
 
   let barEls = [];
   function rebuildHistogram() {
     const ep = meta.episodes[currentEpId];
-    const maxRate = Math.max(...ep.hours.map((x) => x.depRate), 0.1);
+    const vals = ep.hours.map((r) => {
+      if (chartMetric === "ta") return Math.max(0, r.ta + 2.0);
+      return r[chartMetric] || 0;
+    });
+    const maxV = Math.max(...vals, 0.1);
     histBars.innerHTML = "";
-    barEls = ep.hours.map((row) => {
+    barEls = vals.map((v) => {
       const b = document.createElement("div");
-      b.className = "hist-bar";
-      const pct = Math.max(8, Math.round((row.depRate / maxRate) * 100));
+      b.className = `hist-bar ${chartMetric}`;
+      const pct = Math.max(7, Math.round((v / maxV) * 100));
       b.style.height = `${pct}%`;
       histBars.appendChild(b);
       return b;
@@ -166,8 +200,8 @@ async function boot() {
     const ep = meta.episodes[currentEpId];
     if (m === 0) {
       legendBody.innerHTML = `
-        <div class="legend-title">Satellite Sentinel-2 + dépôt simulé</div>
-        <div>Assombrissement progressif de la neige et de la glace vive piloté par le dépôt cumulé (<strong>${fmtFr(ep.dailyDepMgM2, 1)} mg m⁻²</strong> sur 24 h).</div>
+        <div class="legend-title">Atmosphère &amp; surface glaciaire</div>
+        <div>Fumée volumétrique entraînée par le vent · <span style="color:#5cc8ff">ligne cyan</span> = isotherme pluie/neige (pluie en bas, neige fraîche en haut).</div>
       `;
     } else if (m === 1) {
       legendBody.innerHTML = `
@@ -188,37 +222,86 @@ async function boot() {
     } else {
       legendBody.innerHTML = `
         <div class="legend-title">Maquette géomorphologique</div>
-        <div>Relief pur Copernicus GLO-30 (1 867 – 3 494 m) avec ombres solaires réelles sur les cirques, chutes de glace et moraines.</div>
+        <div>Relief pur Copernicus GLO-30 (1 867 – 3 494 m) avec ombres solaires pilotées par SW↓.</div>
       `;
     }
   }
 
+  function syncSlidersToState(s) {
+    slLabSmoke.value = String(Math.round(s.plume * 100));
+    valLabSmoke.textContent = `${Math.round(s.plume * 100)} %`;
+    slLabSw.value = String(Math.round(s.sw));
+    valLabSw.textContent = `${Math.round(s.sw)} W m⁻²`;
+    slLabPrecip.value = s.precip.toFixed(1);
+    valLabPrecip.textContent = `${fmtFr(s.precip, 1)} mm/h`;
+    slLabTemp.value = s.ta.toFixed(1);
+    valLabTemp.textContent = `${fmtFr(s.ta, 1)} °C`;
+    slLabWind.value = s.u.toFixed(1);
+    valLabWind.textContent = `${fmtFr(s.u, 1)} m/s`;
+  }
+
   function syncTimeUI() {
     const ep = meta.episodes[currentEpId];
-    const s = sampleEpisodeAtHour(ep, currentHour);
+    const base = sampleEpisodeAtHour(ep, currentHour);
 
-    glacier.setEpisodeState({
+    // Apply optional live Weather Lab manual overrides cleanly on top of real episode state
+    const s = { ...base };
+    if (labActive) {
+      s.plume = lab.smoke;
+      s.sw = lab.sw;
+      s.precip = lab.precip;
+      s.ta = lab.ta;
+      s.u = lab.wind;
+      s.rh = s.precip > 0.2 ? Math.max(88, base.rh) : base.rh;
+      s.rainSnowM = jenningsRainSnowElevM(s.ta, s.rh, meta.awsElevM, meta.lapseCPerKm);
+      s.cloud = Math.min(1.0, Math.max(base.cloud, s.precip > 0.1 ? 0.82 : 0.15));
+      s.lw = 275 + s.cloud * 52;
+      s.wetFrac = s.precip > 0.2 ? 0.78 : 0.0;
+      if (s.precip > 0.2) {
+        const snowFrac = Math.max(0, Math.min(1, (3456 - s.rainSnowM) / (3456 - 1965)));
+        s.snowCumMm = Math.max(base.snowCumMm, s.precip * 3.5 * snowFrac);
+      }
+    } else {
+      syncSlidersToState(s);
+    }
+
+    glacier.setMeteorology({
       hour: s.hour,
       depCumFrac: s.depCumFrac,
-      depRateNorm: s.depRateNorm,
       plumeDensity: s.plume,
-      wetFrac: s.wetFrac,
+      cloudCover: s.cloud,
+      precipMmH: s.precip,
+      rainSnowM: s.rainSnowM,
+      snowCumMm: s.snowCumMm,
       windSpeed: s.u,
       windBearingDeg: ep.windBearingDeg,
+      swIn: s.sw,
+      lwIn: s.lw,
+      wetFrac: s.wetFrac,
       dailyDepMgM2: ep.dailyDepMgM2,
     });
 
     timeSlider.value = s.hour.toFixed(2);
     clockTime.textContent = formatHour(s.hour);
-    clockPhase.textContent = describePhase(currentEpId, s);
+    clockPhase.textContent = describePhase(currentEpId, s, labActive);
 
     const isClean = glacier.state.compareClean;
-    kpiDepCum.textContent = isClean ? "0,0 mg m⁻² (avant)" : `${fmtFr(s.depCum, 1)} mg m⁻²`;
-    kpiDepRate.textContent = `${fmtFr(s.depRate, 2)} mg m⁻² h⁻¹`;
-    kpiDeltaAlpha.textContent = isClean ? "0,000" : fmtFr(s.deltaAlpha, 3);
-    kpiRF.textContent = isClean ? "0,0 W m⁻²" : `+${fmtFr(s.rf, 1)} W m⁻²`;
-    kpiMet.textContent = `${fmtFr(s.u, 1)} m/s · ${Math.round(s.sw)} W/m²`;
-    kpiTemp.textContent = `${fmtFr(s.ta, 1)} °C · ${Math.round(s.rh)} %`;
+    kpiSw.textContent = `${Math.round(s.sw)} W m⁻²`;
+    kpiLw.textContent = `${Math.round(s.lw)} W m⁻²`;
+    kpiTempIso.textContent = `${fmtFr(s.ta, 1)} °C · ${Math.round(s.rainSnowM)} m`;
+    if (s.precip < 0.05) {
+      kpiPrecip.textContent = s.snowCumMm > 0.2 ? `0 mm/h (${fmtFr(s.snowCumMm, 1)} mm neige)` : "Sec · 0,0 mm/h";
+    } else if (s.rainSnowM <= 2100) {
+      kpiPrecip.textContent = `Neige · ${fmtFr(s.precip, 1)} mm/h`;
+    } else if (s.rainSnowM >= 3460) {
+      kpiPrecip.textContent = `Pluie · ${fmtFr(s.precip, 1)} mm/h`;
+    } else {
+      kpiPrecip.textContent = `Mixte · ${fmtFr(s.precip, 1)} mm/h`;
+    }
+    kpiWindRh.textContent = `${fmtFr(s.u, 1)} m/s · ${Math.round(s.rh)} %`;
+    kpiDep.textContent = isClean
+      ? "0,0 mg m⁻²"
+      : `${fmtFr(s.depCum, 1)} mg m⁻² · ${fmtFr(s.deltaAlpha, 3)}`;
 
     const curIdx = Math.floor(s.hour);
     for (let i = 0; i < barEls.length; i++) {
@@ -227,7 +310,7 @@ async function boot() {
     }
   }
 
-  // Play / Pause controls
+  // Play / Pause
   const btnPlay = document.getElementById("btnPlay");
   const iconPlay = document.getElementById("iconPlay");
   const iconPause = document.getElementById("iconPause");
@@ -250,16 +333,28 @@ async function boot() {
     syncTimeUI();
   });
 
+  // Histogram metric switcher
+  document.querySelectorAll(".ctab").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      chartMetric = btn.dataset.metric;
+      document.querySelectorAll(".ctab").forEach((b) => b.classList.toggle("active", b === btn));
+      rebuildHistogram();
+      syncTimeUI();
+    });
+  });
+
   // Episode switcher
   document.querySelectorAll(".ep-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       currentEpId = btn.dataset.episode;
+      labActive = false;
+      btnSyncAws.classList.add("hidden");
       document.querySelectorAll(".ep-btn").forEach((b) => {
         const on = b.dataset.episode === currentEpId;
         b.classList.toggle("active", on);
         b.setAttribute("aria-selected", on ? "true" : "false");
       });
-      currentHour = 0.0;
+      currentHour = currentEpId === "2018-08-26" ? 13.0 : 11.0;
       rebuildHistogram();
       updateLegend();
       syncTimeUI();
@@ -267,7 +362,56 @@ async function boot() {
     });
   });
 
-  // Hold to compare clean (before deposition)
+  // Live Weather Lab manual overrides
+  function enterLab() {
+    if (!labActive) {
+      const s = sampleEpisodeAtHour(meta.episodes[currentEpId], currentHour);
+      lab.smoke = s.plume;
+      lab.sw = s.sw;
+      lab.precip = s.precip;
+      lab.ta = s.ta;
+      lab.wind = s.u;
+      labActive = true;
+      btnSyncAws.classList.remove("hidden");
+    }
+  }
+  slLabSmoke.addEventListener("input", () => {
+    enterLab();
+    lab.smoke = parseFloat(slLabSmoke.value) / 100;
+    valLabSmoke.textContent = `${Math.round(lab.smoke * 100)} %`;
+    syncTimeUI();
+  });
+  slLabSw.addEventListener("input", () => {
+    enterLab();
+    lab.sw = parseFloat(slLabSw.value);
+    valLabSw.textContent = `${Math.round(lab.sw)} W m⁻²`;
+    syncTimeUI();
+  });
+  slLabPrecip.addEventListener("input", () => {
+    enterLab();
+    lab.precip = parseFloat(slLabPrecip.value);
+    valLabPrecip.textContent = `${fmtFr(lab.precip, 1)} mm/h`;
+    syncTimeUI();
+  });
+  slLabTemp.addEventListener("input", () => {
+    enterLab();
+    lab.ta = parseFloat(slLabTemp.value);
+    valLabTemp.textContent = `${fmtFr(lab.ta, 1)} °C`;
+    syncTimeUI();
+  });
+  slLabWind.addEventListener("input", () => {
+    enterLab();
+    lab.wind = parseFloat(slLabWind.value);
+    valLabWind.textContent = `${fmtFr(lab.wind, 1)} m/s`;
+    syncTimeUI();
+  });
+  btnSyncAws.addEventListener("click", () => {
+    labActive = false;
+    btnSyncAws.classList.add("hidden");
+    syncTimeUI();
+  });
+
+  // Hold to compare clean
   const btnCompare = document.getElementById("btnCompare");
   const setClean = (on) => {
     glacier.setCompareClean(on);
@@ -278,17 +422,14 @@ async function boot() {
   window.addEventListener("pointerup", () => { if (glacier.state.compareClean) setClean(false); });
   btnCompare.addEventListener("pointerleave", () => { if (glacier.state.compareClean) setClean(false); });
 
-  // Keyboard shortcuts
   window.addEventListener("keydown", (e) => {
     if (e.target.tagName === "INPUT") return;
     if (e.code === "Space") { e.preventDefault(); setPlaying(!playing); }
     if (e.key === "b" || e.key === "B") setClean(true);
   });
-  window.addEventListener("keyup", (e) => {
-    if (e.key === "b" || e.key === "B") setClean(false);
-  });
+  window.addEventListener("keyup", (e) => { if (e.key === "b" || e.key === "B") setClean(false); });
 
-  // Camera presets
+  // Presets & drawer
   const presetBtns = document.querySelectorAll(".preset-group .pill-btn");
   presetBtns.forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -297,20 +438,16 @@ async function boot() {
       glacier.flyTo(btn.dataset.preset);
     });
   });
-  document.getElementById("compassWrap").addEventListener("click", () => {
-    glacier.flyTo("block");
-  });
+  document.getElementById("compassWrap").addEventListener("click", () => glacier.flyTo("block"));
   canvas.addEventListener("dblclick", () => glacier.flyTo("block"));
 
-  // Settings drawer
   const btnSettings = document.getElementById("btnSettings");
   const settingsDrawer = document.getElementById("settingsDrawer");
   btnSettings.addEventListener("click", () => {
-    const open = settingsDrawer.classList.toggle("hidden");
-    btnSettings.setAttribute("aria-expanded", open ? "false" : "true");
+    const hidden = settingsDrawer.classList.toggle("hidden");
+    btnSettings.setAttribute("aria-expanded", hidden ? "false" : "true");
   });
 
-  // Mode buttons
   const modeBtns = document.querySelectorAll(".mode-btn");
   modeBtns.forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -321,7 +458,6 @@ async function boot() {
     });
   });
 
-  // Sliders & toggles
   const slExag = document.getElementById("slExag");
   const valExag = document.getElementById("valExag");
   slExag.addEventListener("input", () => {
@@ -338,38 +474,23 @@ async function boot() {
     glacier.setBoost(v);
   });
 
-  const slSunEl = document.getElementById("slSunEl");
-  const valSunMode = document.getElementById("valSunMode");
-  const chkAutoSun = document.getElementById("chkAutoSun");
-  slSunEl.addEventListener("input", () => {
-    glacier.state.autoSun = false;
-    chkAutoSun.checked = false;
-    glacier.state.manualSunEl = parseFloat(slSunEl.value);
-    valSunMode.textContent = `${Math.round(glacier.state.manualSunEl)}°`;
-    glacier._updateSunAndAtmosphere();
-  });
-  chkAutoSun.addEventListener("change", () => {
-    glacier.state.autoSun = chkAutoSun.checked;
-    valSunMode.textContent = chkAutoSun.checked ? "Auto (24 h)" : `${Math.round(glacier.state.manualSunEl)}°`;
-    glacier._updateSunAndAtmosphere();
-  });
-
-  document.getElementById("chkPlume").addEventListener("change", (e) => glacier.setShowPlume(e.target.checked));
+  document.getElementById("chkSmoke").addEventListener("change", (e) => glacier.setShowSmoke(e.target.checked));
+  document.getElementById("chkPrecip").addEventListener("change", (e) => glacier.setShowPrecip(e.target.checked));
+  document.getElementById("chkIsotherm").addEventListener("change", (e) => glacier.setShowIsotherm(e.target.checked));
   document.getElementById("chkShadows").addEventListener("change", (e) => glacier.setShadows(e.target.checked));
   document.getElementById("chkContours").addEventListener("change", (e) => glacier.setContours(e.target.checked));
   document.getElementById("chkLabels").addEventListener("change", (e) => {
     showLabels = e.target.checked;
     labelsLayer.style.display = showLabels ? "block" : "none";
   });
-  document.getElementById("chkSpin").addEventListener("change", (e) => {
-    glacier.state.spin = e.target.checked;
-  });
+  document.getElementById("chkSpin").addEventListener("change", (e) => { glacier.state.spin = e.target.checked; });
 
   document.getElementById("btnReset").addEventListener("click", () => {
+    labActive = false;
+    btnSyncAws.classList.add("hidden");
     glacier.flyTo("block");
     slExag.value = "1.30"; valExag.textContent = "1,30×"; glacier.setExaggeration(1.30);
     slBoost.value = "2.2"; valBoost.textContent = "2,2×"; glacier.setBoost(2.2);
-    glacier.state.autoSun = true; chkAutoSun.checked = true; valSunMode.textContent = "Auto (24 h)";
     glacier.state.spin = false; document.getElementById("chkSpin").checked = false;
     syncTimeUI();
   });
@@ -381,7 +502,6 @@ async function boot() {
     a.click();
   });
 
-  // Provenance modal
   const infoModal = document.getElementById("infoModal");
   document.getElementById("btnInfo").addEventListener("click", () => infoModal.classList.remove("hidden"));
   document.getElementById("btnCloseInfo").addEventListener("click", () => infoModal.classList.add("hidden"));
@@ -389,13 +509,11 @@ async function boot() {
 
   window.addEventListener("resize", () => glacier.resize());
 
-  // Initial sync & dismiss loader
   rebuildHistogram();
   updateLegend();
   syncTimeUI();
-  setTimeout(() => loader.classList.add("done"), 180);
+  setTimeout(() => loader.classList.add("done"), 160);
 
-  // Main render loop
   let lastNow = performance.now();
   function animate(now) {
     requestAnimationFrame(animate);
@@ -403,22 +521,19 @@ async function boot() {
     lastNow = now;
 
     if (playing) {
-      // 1x = 1.6 simulated hours per second (~15 s full 24 h cycle)
-      currentHour += dt * 1.35 * speeds[speedIdx];
+      currentHour += dt * 1.1 * speeds[speedIdx];
       if (currentHour > 23.0) currentHour = 0.0;
       syncTimeUI();
     }
 
     glacier.update(dt);
 
-    // Update rotating North compass
     const deg = glacier.getNorthAngleDeg();
     compassSvg.style.transform = `rotate(${deg.toFixed(1)}deg)`;
     const rad = (deg * Math.PI) / 180;
     compassN.style.left = `${(19 + 13 * Math.sin(rad) - 4).toFixed(1)}px`;
     compassN.style.top = `${(19 - 13 * Math.cos(rad) - 6).toFixed(1)}px`;
 
-    // Update 3D projected labels
     if (showLabels) {
       for (let i = 0; i < pins.length; i++) {
         const { el, lm } = pins[i];

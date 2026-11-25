@@ -94,6 +94,7 @@ html, body, #app {
 .ep-btn.active { color: var(--text); background: rgba(92,200,255,0.16); border-color: rgba(92,200,255,0.50); }
 .ep-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--rain); }
 .ep-dot.amber { background: var(--amber); }
+.ep-dot.hot { background: #ef4444; }
 .ep-tag { font-size: 11px; color: var(--muted); }
 
 /* Top-Right */

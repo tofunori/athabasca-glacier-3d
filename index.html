@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Athabasca 3D · Dépôt de carbone de feux sur glacier</title>
+  <meta name="description" content="Explorateur 3D interactif du glacier Athabasca (champ de glace Columbia) avec simulation horaire de dépôt atmosphérique de carbone issu de feux de forêt (RAQDPS FireWork − noFire)." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div id="app">
+    <canvas id="sceneCanvas"></canvas>
+    <div id="labelsLayer" aria-hidden="true"></div>
+
+    <!-- Loading Overlay -->
+    <div id="loader" class="loader">
+      <div class="loader-card">
+        <div class="loader-ring"></div>
+        <div class="loader-title">Glacier Athabasca · 3D</div>
+        <div id="loaderSub" class="loader-sub">Chargement du MNE Copernicus GLO-30 et de Sentinel-2…</div>
+      </div>
+    </div>
+
+    <!-- Top-Left Brand & Episode Selector -->
+    <header class="hud-top-left">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div>
+          <h1 class="brand-title">Athabasca 3D</h1>
+          <p class="brand-sub">Champ de glace Columbia · Rocheuses canadiennes</p>
+        </div>
+        <button id="btnInfo" class="icon-btn" title="Sources et méthode scientifique" aria-label="Sources et méthode">i</button>
+      </div>
+
+      <div class="episode-bar" role="tablist" aria-label="Épisode de feux">
+        <button class="ep-btn active" data-episode="2018-08-26" role="tab" aria-selected="true">
+          <span class="ep-dot"></span>
+          <span>26 août 2018</span>
+          <span class="ep-tag">AWS + lessivage</span>
+        </button>
+        <button class="ep-btn" data-episode="2023-08-31" role="tab" aria-selected="false">
+          <span class="ep-dot amber"></span>
+          <span>31 août 2023</span>
+          <span class="ep-tag">Épisode sec</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Top-Right Navigation & Settings Toggle -->
+    <nav class="hud-top-right" aria-label="Caméra et réglages">
+      <div class="preset-group">
+        <button class="pill-btn active" data-preset="block">Bloc 3D</button>
+        <button class="pill-btn" data-preset="flyover">Survol</button>
+        <button class="pill-btn" data-preset="plateau">Plateau</button>
+        <button class="pill-btn" data-preset="top">Carte</button>
+      </div>
+
+      <button id="btnSettings" class="pill-btn accent-outline" aria-expanded="false">
+        Couches &amp; réglages
+      </button>
+
+      <div class="compass" title="Orientation Nord (cliquer pour réinitialiser la vue)" id="compassWrap">
+        <svg id="compassSvg" viewBox="0 0 40 40">
+          <circle cx="20" cy="20" r="16" fill="none" stroke="rgba(226,238,255,0.18)" stroke-width="1" />
+          <polygon points="20,5 23.5,20 20,17 16.5,20" fill="#f97316" />
+          <polygon points="20,35 23.5,20 20,23 16.5,20" fill="rgba(226,238,255,0.32)" />
+        </svg>
+        <span id="compassN" class="compass-n">N</span>
+      </div>
+    </nav>
+
+    <!-- Collapsible Right Settings Drawer -->
+    <aside id="settingsDrawer" class="drawer hidden" aria-label="Réglages 3D">
+      <div class="drawer-section">
+        <div class="section-label">Couche de surface</div>
+        <div class="mode-grid" id="modeGrid">
+          <button class="mode-btn active" data-mode="0">Satellite + dépôt</button>
+          <button class="mode-btn" data-mode="1">Carte dépôt (mg m⁻²)</button>
+          <button class="mode-btn" data-mode="2">Glace / Neige</button>
+          <button class="mode-btn" data-mode="3">Maquette relief</button>
+        </div>
+      </div>
+
+      <div class="drawer-section">
+        <div class="section-label">Visualisation physique</div>
+
+        <label class="slider-row">
+          <span class="slider-head"><span>Exagération verticale</span><strong id="valExag">1,30×</strong></span>
+          <input id="slExag" type="range" min="0.6" max="2.4" step="0.05" value="1.30" />
+        </label>
+
+        <label class="slider-row">
+          <span class="slider-head"><span>Visibilité de l'assombrissement</span><strong id="valBoost">2,2×</strong></span>
+          <input id="slBoost" type="range" min="1.0" max="4.0" step="0.1" value="2.2" />
+        </label>
+
+        <label class="slider-row">
+          <span class="slider-head"><span>Hauteur du soleil</span><strong id="valSunMode">Auto (24 h)</strong></span>
+          <input id="slSunEl" type="range" min="12" max="68" step="1" value="32" />
+        </label>
+      </div>
+
+      <div class="drawer-section">
+        <div class="section-label">Éléments affichés</div>
+        <label class="toggle-row">
+          <span>Panache &amp; particules de suie</span>
+          <input id="chkPlume" type="checkbox" checked />
+        </label>
+        <label class="toggle-row">
+          <span>Ombres portées réelles</span>
+          <input id="chkShadows" type="checkbox" checked />
+        </label>
+        <label class="toggle-row">
+          <span>Courbes de niveau (100 m)</span>
+          <input id="chkContours" type="checkbox" />
+        </label>
+        <label class="toggle-row">
+          <span>Repères &amp; sommets</span>
+          <input id="chkLabels" type="checkbox" checked />
+        </label>
+        <label class="toggle-row">
+          <span>Soleil synchronisé à l'heure</span>
+          <input id="chkAutoSun" type="checkbox" checked />
+        </label>
+        <label class="toggle-row">
+          <span>Rotation orbitale douce</span>
+          <input id="chkSpin" type="checkbox" />
+        </label>
+      </div>
+
+      <div class="drawer-actions">
+        <button id="btnReset" class="pill-btn">Réinitialiser</button>
+        <button id="btnSnap" class="pill-btn primary">Capturer PNG</button>
+      </div>
+    </aside>
+
+    <!-- Bottom Floating Legend (left of timeline on wide screens) -->
+    <div id="legendCard" class="legend-card">
+      <div id="legendBody"></div>
+    </div>
+
+    <!-- Bottom Center 24-Hour Deposition Simulation Dock -->
+    <section class="timeline-dock" aria-label="Simulation 24 h de dépôt atmosphérique">
+      <div class="dock-top">
+        <div class="play-controls">
+          <button id="btnPlay" class="play-btn" title="Lecture / Pause (Espace)" aria-label="Lecture ou pause">
+            <svg id="iconPlay" viewBox="0 0 20 20" width="16" height="16" fill="currentColor">
+              <polygon points="5,3 17,10 5,17" />
+            </svg>
+            <svg id="iconPause" viewBox="0 0 20 20" width="16" height="16" fill="currentColor" style="display:none">
+              <rect x="4" y="3" width="4.5" height="14" rx="1" />
+              <rect x="11.5" y="3" width="4.5" height="14" rx="1" />
+            </svg>
+          </button>
+          <button id="btnSpeed" class="speed-btn" title="Vitesse de simulation">1×</button>
+          <div class="clock-block">
+            <span id="clockTime" class="clock-time">14:00</span>
+            <span id="clockPhase" class="clock-phase">Panache dense · atténuation solaire</span>
+          </div>
+        </div>
+
+        <button id="btnCompare" class="compare-btn" title="Maintenir pour voir le glacier avant le dépôt (touche B)">
+          Maintenir : avant dépôt
+        </button>
+      </div>
+
+      <!-- Interactive 24h Scrubber with Hourly Deposition Histogram -->
+      <div class="scrubber-wrap" id="scrubberWrap">
+        <div id="histBars" class="hist-bars" aria-hidden="true"></div>
+        <input id="timeSlider" class="time-slider" type="range" min="0" max="23" step="0.05" value="15.0" aria-label="Heure de la journée" />
+        <div class="scrubber-ticks">
+          <span>00 h</span><span>06 h</span><span>12 h</span><span>18 h</span><span>23 h</span>
+        </div>
+      </div>
+
+      <!-- Live Telemetry Metrics -->
+      <div class="kpi-strip">
+        <div class="kpi">
+          <span class="kpi-label">Dépôt cumulé</span>
+          <span class="kpi-val amber" id="kpiDepCum">—</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">Flux horaire</span>
+          <span class="kpi-val" id="kpiDepRate">—</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">Baisse albédo Δα</span>
+          <span class="kpi-val ice" id="kpiDeltaAlpha">—</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">Forçage RF</span>
+          <span class="kpi-val" id="kpiRF">—</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">Vent / SW↓</span>
+          <span class="kpi-val" id="kpiMet">—</span>
+        </div>
+        <div class="kpi">
+          <span class="kpi-label">T / HR</span>
+          <span class="kpi-val" id="kpiTemp">—</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scientific Provenance Modal -->
+    <div id="infoModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="infoTitle">
+      <div class="modal-card">
+        <div class="modal-head">
+          <h2 id="infoTitle">Données, physique et provenance</h2>
+          <button id="btnCloseInfo" class="icon-btn" aria-label="Fermer">×</button>
+        </div>
+        <div class="modal-body">
+          <p><strong>Glacier Athabasca</strong> (<code>RGI2000-v7.0-G-02-12982</code>, 16,15 km², 1 965 – 3 456 m), champ de glace Columbia, Rocheuses canadiennes (région <code>02-03</code>).</p>
+          <ul>
+            <li><strong>Topographie</strong> : MNE Copernicus GLO-30 (30 m), fenêtre de 11 × 11 km projetée en UTM 11N (maillage 320 × 320, 102 400 sommets).</li>
+            <li><strong>Surface optique</strong> : Sentinel-2 L2A sans nuages (<code>S2B_11UMT_20240905_0_L2A</code>, 5 sept. 2024), étalonnée sur les bandes B04/B03/B02 pour préserver les nuances de névé et de glace vive, avec rugosité physique dérivée du NDSI et du NDWI.</li>
+            <li><strong>Dépôt de feux (EC + POM + SOM, sec + humide, mg m⁻²)</strong> : calibré sur les sorties RAQDPS / GEM-MACH (<code>FireWork − noFire</code>) et le panel canonique du Chapitre 1 (2023 : 159–167 mg m⁻² sur l'été, albédo d'ablation 0,415 ; 2018 : météo horaire observée directement par la station AWS d'Athabasca le 26 août 2018).</li>
+            <li><strong>Note visuelle</strong> : les particules visibles en 3D matérialisent le flux atmosphérique d'aérosols carbonés (physiquement sub-microniques) proportionnellement au taux horaire de dépôt et à la vitesse du vent. Le curseur « Visibilité de l'assombrissement » permet de passer de l'amplitude optique réelle (<code>1×</code>) à un mode amplifié pour la présentation.</li>
+          </ul>
+          <p id="modalProvenance" class="modal-note"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

@@ -84,11 +84,11 @@ html, body, #app {
 }
 .icon-btn:hover { color: var(--text); border-color: var(--border-hover); background: rgba(255,255,255,0.09); }
 
-.episode-bar { display: flex; flex-wrap: wrap; gap: 6px; }
+.episode-bar { display: flex; flex-wrap: wrap; gap: 5px; max-width: calc(100vw - 560px); }
 .ep-btn {
-  display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border-radius: 9px;
+  display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border-radius: 9px;
   background: var(--surface); border: 1px solid var(--border); backdrop-filter: blur(14px);
-  color: var(--muted); font-family: var(--font-body); font-size: 12.5px; font-weight: 500; cursor: pointer;
+  color: var(--muted); font-family: var(--font-body); font-size: 12px; font-weight: 500; cursor: pointer;
 }
 .ep-btn:hover { color: var(--text); border-color: var(--border-hover); }
 .ep-btn.active { color: var(--text); background: rgba(92,200,255,0.16); border-color: rgba(92,200,255,0.50); }
@@ -229,6 +229,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); height: 4px; cur
 .hist-bar { flex: 1; border-radius: 1.5px 1.5px 0 0; background: rgba(147,167,190,0.20); }
 .hist-bar.past.depRate { background: rgba(245,158,11,0.75); }
 .hist-bar.current.depRate { background: #fbbf24; }
+.hist-bar.past.pm25 { background: rgba(249,115,22,0.78); }
+.hist-bar.current.pm25 { background: #fb923c; }
 .hist-bar.past.sw { background: rgba(253,224,71,0.75); }
 .hist-bar.current.sw { background: #fef08a; }
 .hist-bar.past.precip { background: rgba(96,165,250,0.82); }

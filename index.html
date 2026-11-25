@@ -35,30 +35,35 @@
       </div>
 
       <div class="episode-bar" role="tablist" aria-label="Séquence météorologique">
-        <button class="ep-btn active" data-episode="2023-08-18_25" role="tab" aria-selected="true">
+        <button class="ep-btn active" data-episode="2023-08-17_24" role="tab" aria-selected="true">
           <span class="ep-dot amber"></span>
           <span>Août 2023</span>
-          <span class="ep-tag">18–25 · 8 j</span>
+          <span class="ep-tag">17–24 · NAS</span>
+        </button>
+        <button class="ep-btn" data-episode="2023-06-11_18" role="tab" aria-selected="false">
+          <span class="ep-dot hot"></span>
+          <span>Juin 2023</span>
+          <span class="ep-tag">11–18 · Neige</span>
         </button>
         <button class="ep-btn" data-episode="2023-08-26_0902" role="tab" aria-selected="false">
           <span class="ep-dot amber"></span>
           <span>Fin août 2023</span>
           <span class="ep-tag">26–2 sept.</span>
         </button>
+        <button class="ep-btn" data-episode="2021-08-12_19" role="tab" aria-selected="false">
+          <span class="ep-dot amber"></span>
+          <span>Août 2021</span>
+          <span class="ep-tag">12–19 · Sec</span>
+        </button>
         <button class="ep-btn" data-episode="2024-07-22_29" role="tab" aria-selected="false">
           <span class="ep-dot hot"></span>
           <span>Juil. 2024</span>
-          <span class="ep-tag">Jasper · 8 j</span>
-        </button>
-        <button class="ep-btn" data-episode="2021-08-13_20" role="tab" aria-selected="false">
-          <span class="ep-dot amber"></span>
-          <span>Août 2021</span>
-          <span class="ep-tag">Record suie</span>
+          <span class="ep-tag">Jasper · ERA5</span>
         </button>
         <button class="ep-btn" data-episode="2018-08-21_28" role="tab" aria-selected="false">
           <span class="ep-dot"></span>
           <span>Août 2018</span>
-          <span class="ep-tag">AWS · 8 j</span>
+          <span class="ep-tag">AWS + NAS</span>
         </button>
       </div>
     </header>
@@ -210,6 +215,7 @@
           <div class="chart-tabs" id="chartTabs" role="tablist" aria-label="Variable du graphique">
             <button class="ctab active" data-metric="precip">Pluie/Neige</button>
             <button class="ctab" data-metric="depRate">Dépôt</button>
+            <button class="ctab" data-metric="pm25">PM2,5</button>
             <button class="ctab" data-metric="sw">SW↓</button>
             <button class="ctab" data-metric="ta">Temp.</button>
           </div>
@@ -231,12 +237,12 @@
       <!-- Complete Live Hourly Telemetry Strip -->
       <div class="kpi-strip">
         <div class="kpi">
-          <span class="kpi-label">Solaire SW↓</span>
-          <span class="kpi-val solar" id="kpiSw">—</span>
+          <span class="kpi-label">Solaire · LW↓</span>
+          <span class="kpi-val solar" id="kpiSwLw">—</span>
         </div>
         <div class="kpi">
-          <span class="kpi-label">IR LW↓</span>
-          <span class="kpi-val" id="kpiLw">—</span>
+          <span class="kpi-label">Fumée · PM2,5</span>
+          <span class="kpi-val amber" id="kpiSmoke">—</span>
         </div>
         <div class="kpi">
           <span class="kpi-label">Temp. · Iso. neige</span>
@@ -251,7 +257,7 @@
           <span class="kpi-val" id="kpiSnowPack">—</span>
         </div>
         <div class="kpi">
-          <span class="kpi-label">Dépôt · Δα</span>
+          <span class="kpi-label">Dépôt cumulé</span>
           <span class="kpi-val amber" id="kpiDep">—</span>
         </div>
       </div>
@@ -265,12 +271,11 @@
           <button id="btnCloseInfo" class="icon-btn" aria-label="Fermer">×</button>
         </div>
         <div class="modal-body">
-          <p><strong>Glacier Athabasca</strong> (<code>RGI2000-v7.0-G-02-12982</code>, 16,15 km², 1 965 – 3 456 m), champ de glace Columbia, Rocheuses canadiennes (<code>02-03</code>).</p>
+          <p><strong>Glacier Athabasca</strong> (<code>RGI2000-v7.0-G-02-12982</code>, 16,15 km², 1 965 – 3 456 m, 66 pixels MODIS), champ de glace Columbia, Rocheuses canadiennes (<code>02-03</code>).</p>
           <ul>
-            <li><strong>Séquence continue de 8 jours (21–28 août 2018 · 192 h AWS)</strong> : enchaîne chaleur claire (<code>SW↓ = 770 W m⁻²</code>, <code>16,4 °C</code>), arrivée de la fumée de C.-B., front froid avec pluie sur la langue et neige en altitude (24 &amp; 26 août), réinitialisation de l'albédo par neige fraîche (27 août) puis fonte au retour du soleil (<code>791 W m⁻²</code>).</li>
-            <li><strong>Immersion « Sur le glacier »</strong> : place la caméra directement sur la langue glaciaire (~2 180 m, niveau station AWS) avec dôme céleste complet (lever/coucher de soleil, étoiles de nuit), rideaux de pluie + filets proches caméra, et flocons doux tourbillonnant dans le vent au-dessus de l'isotherme de Jennings.</li>
-            <li><strong>Manteau neigeux multi-jours selon la pente</strong> : la neige fraîche s'accumule au-dessus de l'isotherme pluie/neige sur les pentes modérées (en laissant les parois verticales sombres), enfouit la suie, puis fond progressivement lors des heures chaudes et ensoleillées.</li>
-            <li><strong>Dépôt de carbone de feux</strong> : <code>EC + POM + SOM</code> (sec + humide, <code>mg m⁻²</code>) calibré sur RAQDPS / GEM-MACH (<code>FireWork − noFire</code>).</li>
+            <li><strong>Données horaires exactes RAQDPS (NAS, 2018 · 2021 · 2023)</strong> : extraites directement des archives NetCDF <code>FireWork − noFire</code> (<code>DEC + WEC + DPOM + DSOM + WPOM + WSOM</code>, sec + humide <code>D002</code>, masses molaires 12,011 et 132,1342 g mol⁻¹), <code>AF_WILDFIRE</code> (PM2,5), <code>ΔAOD580</code>, <code>PR</code> et <code>SN</code> par poids IDW 3×3 canoniques (parité DuckDB ≤ 8×10⁻¹⁶), converties en heure locale d'Alberta (<code>MDT = UTC−6</code>).</li>
+            <li><strong>Météo horaire locale</strong> : station AWS réelle sur la langue du glacier en août 2018 (<code>Ta, HR, U, SW↓, LW↓</code>) ; réanalyse ERA5 horaire (2 180 m) pour 2021, 2023 et 2024. L'épisode <em>Juil. 2024 (Jasper)</em> utilise ERA5 réel et un panache illustratif (hors archive RAQDPS 2002–2023).</li>
+            <li><strong>Immersion « Sur le glacier » &amp; neige multi-jours</strong> : caméra à l'altitude de la station AWS (~2 180 m), pluie sous l'isotherme de Jennings et neige tourbillonnante au-dessus, manteau neigeux frais sensible à la pente qui enfouit la suie puis fond au soleil.</li>
           </ul>
           <p id="modalProvenance" class="modal-note"></p>
         </div>

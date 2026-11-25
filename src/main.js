@@ -2,7 +2,7 @@ import "./style.css";
 import * as THREE from "three";
 import { GlacierScene } from "./glacierScene.js";
 
-const DATA_VER = "v5_20261125";
+const DATA_VER = "v6_nas_exact_20261125";
 const loader = document.getElementById("loader");
 const loaderSub = document.getElementById("loaderSub");
 const canvas = document.getElementById("sceneCanvas");
@@ -65,8 +65,12 @@ function sampleSequenceAtStep(ep, tFloat) {
     hour: hourOfDay >= 24 ? hourOfDay - 24 : hourOfDay,
     depCum: lerp(a.depCum ?? 0, b.depCum ?? 0, f),
     depRate: lerp(a.depRate ?? 0, b.depRate ?? 0, f),
+    dryRate: lerp(a.dryRate ?? 0, b.dryRate ?? 0, f),
+    wetRate: lerp(a.wetRate ?? 0, b.wetRate ?? 0, f),
     depCumFrac: lerp(a.depCum ?? 0, b.depCum ?? 0, f) / Math.max(ep.totalDepMgM2 || ep.dailyDepMgM2 || 1, 0.1),
     deltaAlpha: lerp(a.deltaAlpha ?? 0, b.deltaAlpha ?? 0, f),
+    pm25: a.pm25 == null || b.pm25 == null ? null : lerp(a.pm25, b.pm25, f),
+    daod: a.daod == null || b.daod == null ? null : lerp(a.daod, b.daod, f),
     sw: lerp(a.sw ?? 0, b.sw ?? 0, f),
     lw: lerp(a.lw ?? 300, b.lw ?? 300, f),
     cloud: lerp(a.cloud ?? 0.2, b.cloud ?? 0.2, f),
@@ -85,17 +89,23 @@ function sampleSequenceAtStep(ep, tFloat) {
 function describePhase(epId, s, labMode) {
   if (labMode) return "Laboratoire météo manuel";
   if (s.hour < 6.0 || s.hour >= 21.5) {
+    if (s.wetRate >= 2.0) return "Lessivage nocturne intense de la fumée";
     if (s.precip >= 0.4) return s.rainSnowM < 2350 ? "Neige nocturne sur le glacier" : "Pluie nocturne · neige en altitude";
-    return "Nuit alpine · ciel étoilé / refroidissement";
+    if (s.pm25 !== null && s.pm25 >= 50) return `Fumée nocturne dense (${Math.round(s.pm25)} µg m⁻³)`;
+    return "Nuit alpine · refroidissement";
   }
   if (s.precip >= 0.45) {
+    if (s.wetRate >= 1.5) return "Lessivage humide (EC+OM) sous précipitations";
     if (s.rainSnowM <= 2280) return "Chute de neige jusqu'au bas du glacier";
     return `Pluie en vallée · Neige > ${Math.round(s.rainSnowM)} m`;
   }
-  if (epId === "2024-07-22_29" && s.plume > 0.72) return "Panache massif du mégafeu de Jasper";
-  if (s.sw >= 620 && s.snowPackMm >= 5) return "Grand soleil sur la neige fraîche !";
-  if (s.sw >= 620 && s.plume < 0.25) return "Ciel alpin pur · fonte au soleil";
-  if (s.plume > 0.65) return "Fumée dense · forte atténuation SW↓";
+  if (epId === "2024-07-22_29" && s.plume > 0.72) return "Panache illustratif du mégafeu de Jasper";
+  if (s.pm25 !== null && s.pm25 < 2.0 && (s.daod ?? 0) < 0.02) {
+    return s.snowPackMm >= 2.5 ? "Air alpin pur · soleil sur neige fraîche" : "Air alpin limpide (0 dépôt actif)";
+  }
+  if (s.pm25 !== null && s.pm25 >= 80) return `Panache extrême · PM2,5 = ${Math.round(s.pm25)} µg m⁻³`;
+  if (s.plume > 0.55) return "Fumée dense · dépôt sec actif";
+  if (s.pm25 !== null && s.pm25 >= 8) return "Retour de brume de feux · dépôt sec";
   if (s.snowPackMm >= 3 && s.ta > 4.0) return "Fonte progressive de la neige fraîche";
   return "Évolution météorologique en vallée";
 }
@@ -111,11 +121,12 @@ function fmtFr(val, dec = 1) {
 }
 
 const EP_START_T = {
-  "2023-08-18_25": 11.5,    // 18 août 2023 11h30 : 5,9 mm/h pluie en bas + neige > 2560 m!
-  "2023-08-26_0902": 132.0, // 31 août 2023 12h00 : pic fumée sèche + averse soirée
-  "2024-07-22_29": 80.5,    // 25 juil. 2024 08h30 : panache Jasper + front pluie/neige
-  "2021-08-13_20": 104.5,   // 17 août 2021 08h30 : record suie 2021 + neige en altitude
-  "2018-08-21_28": 136.75,  // 26 août 2018 16h45 : tempête AWS pluie -> neige
+  "2023-08-17_24": 36.5,    // 18 août 2023 12h30 MDT : orage pluie/neige + lessivage humide (19 août pur -> 20 août retour fumée!)
+  "2023-06-11_18": 33.0,    // 12 juin 2023 09h00 MDT : panache extrême 375 µg m-3, ΔAOD 1,05
+  "2023-08-26_0902": 132.0, // 31 août 2023 12h00 MDT : pluie de lessivage 42 mg m-2
+  "2021-08-12_19": 59.5,    // 14 août 2021 11h30 MDT : record dépôt sec (PM2,5 166, ΔAOD 1,25)
+  "2024-07-22_29": 80.5,    // 25 juil. 2024 08h30 MDT : Jasper ERA5 + front pluie/neige
+  "2018-08-21_28": 83.5,    // 24 août 2018 11h30 MDT : AWS + NAS tempête pluie/neige & lessivage
 };
 
 async function boot() {
@@ -140,8 +151,8 @@ async function boot() {
       return { el, lm };
     });
 
-    // Safe default episode selection (starts on Aug 18-25, 2023 daytime rain+snow+smoke storm!)
-    let currentEpId = "2023-08-18_25";
+    // Safe default episode selection (exact NAS Aug 17-24, 2023 sequence!)
+    let currentEpId = "2023-08-17_24";
     if (!meta.episodes[currentEpId]) {
       currentEpId = Object.keys(meta.episodes)[0];
     }
@@ -161,8 +172,8 @@ async function boot() {
     const clockDate = document.getElementById("clockDate");
     const clockTime = document.getElementById("clockTime");
     const clockPhase = document.getElementById("clockPhase");
-    const kpiSw = document.getElementById("kpiSw");
-    const kpiLw = document.getElementById("kpiLw");
+    const kpiSwLw = document.getElementById("kpiSwLw");
+    const kpiSmoke = document.getElementById("kpiSmoke");
     const kpiTempIso = document.getElementById("kpiTempIso");
     const kpiPrecip = document.getElementById("kpiPrecip");
     const kpiSnowPack = document.getElementById("kpiSnowPack");
@@ -219,7 +230,9 @@ async function boot() {
           const idx = b * histBinHours + k;
           if (idx < ep.hours.length) {
             const r = ep.hours[idx];
-            acc += chartMetric === "ta" ? Math.max(0, (r.ta ?? 0) + 4.0) : (r[chartMetric] || 0);
+            if (chartMetric === "ta") acc += Math.max(0, (r.ta ?? 0) + 4.0);
+            else if (chartMetric === "pm25") acc += r.pm25 != null ? r.pm25 : (r.plume || 0) * 100.0;
+            else acc += r[chartMetric] || 0;
             cnt++;
           }
         }
@@ -329,8 +342,17 @@ async function boot() {
       clockPhase.textContent = describePhase(currentEpId, s, labActive);
 
       const isClean = glacier.state.compareClean;
-      kpiSw.textContent = `${Math.round(s.sw)} W m⁻²`;
-      kpiLw.textContent = `${Math.round(s.lw)} W m⁻²`;
+      kpiSwLw.textContent = `${Math.round(s.sw)} · ${Math.round(s.lw)} W m⁻²`;
+      if (labActive) {
+        kpiSmoke.textContent = `Manuel · ${Math.round(s.plume * 100)} %`;
+      } else if (s.pm25 === null) {
+        kpiSmoke.textContent = `Illustratif · ${Math.round(s.plume * 100)} %`;
+      } else if (s.pm25 < 1.5 && (s.daod ?? 0) < 0.02) {
+        kpiSmoke.textContent = `Air pur · ${fmtFr(s.pm25, 1)} µg m⁻³`;
+      } else {
+        const aodStr = s.daod && s.daod >= 0.02 ? ` · AOD ${fmtFr(s.daod, 2)}` : "";
+        kpiSmoke.textContent = `${fmtFr(s.pm25, s.pm25 >= 10 ? 0 : 1)} µg m⁻³${aodStr}`;
+      }
       kpiTempIso.textContent = `${fmtFr(s.ta, 1)} °C · ${Math.round(s.rainSnowM)} m`;
       if (s.precip < 0.05) {
         kpiPrecip.textContent = "Sec · 0,0 mm/h";
@@ -342,9 +364,12 @@ async function boot() {
         kpiPrecip.textContent = `Mixte · ${fmtFr(s.precip, 1)} mm/h`;
       }
       kpiSnowPack.textContent = isClean ? "0,0 mm" : `${fmtFr(s.snowPackMm, 1)} mm éq.`;
-      kpiDep.textContent = isClean
-        ? "0,0 mg m⁻²"
-        : `${fmtFr(s.depCum, 1)} mg m⁻² · ${fmtFr(s.deltaAlpha, 3)}`;
+      if (isClean) {
+        kpiDep.textContent = "0,0 mg m⁻²";
+      } else {
+        const modeTag = s.depRate < 0.02 ? "0/h" : `+${fmtFr(s.depRate, s.depRate >= 10 ? 0 : 1)} ${s.wetFrac >= 0.5 ? "hum." : "sec"}`;
+        kpiDep.textContent = `${fmtFr(s.depCum, 1)} mg m⁻² (${modeTag})`;
+      }
 
       const curBin = Math.floor(s.t / histBinHours);
       for (let i = 0; i < barEls.length; i++) {

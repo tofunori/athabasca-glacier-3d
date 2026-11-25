@@ -2,16 +2,14 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 /**
- * Three.js 3D Glacier Atmospheric & Cryospheric Simulator:
- * - Real 320x320 Copernicus GLO-30 DEM watertight cutaway block
- * - Custom PBR terrain shader with real PCFSoftShadowMap shadows, snow micro-relief,
- *   progressive FireWork soot darkening, wet-ice specular sheen during rain, fresh snow accumulation
- *   above the live Jennings rain-snow line, and toggleable isotherm & 100 m contours
- * - 5 terrain-draped volumetric 3D wildfire smoke sheets pouring down the valley (ZERO falling dot particles!)
- * - High alpine stratus cloud canopy driven by real hourly LWin (W m-2)
- * - Glowing atmospheric solar disc driven by real hourly SWin (W m-2) and solar trajectory
- * - 7,000 wind-slanted 3D rain streaks (below Jennings rain-snow line)
- * - 8,000 softly fluttering 3D snowflakes (above Jennings rain-snow line)
+ * Three.js 3D Immersive Glacier & Multi-Day Weather Simulator:
+ * - Procedural atmospheric Sky Dome (sunrise/sunset twilight, solar Mie glow, alpine stars at night, smoke & storm skies)
+ * - 320x320 real Copernicus GLO-30 DEM with slope-aware multi-day fresh snowpack accumulation & meltback,
+ *   wet rain specular sheen, progressive FireWork soot darkening, and live Jennings rain-snow isotherm
+ * - 5 terrain-draped 3D volumetric smoke strata pouring down the valley
+ * - Dual-scale realistic RAIN: diagonal valley rain shafts + 14,000 camera-centered near-field slanted rain streaks
+ * - Dual-scale realistic SNOW: soft feathery bokeh snowflake texture + 12,000 turbulent fluttering flakes + ridge spindrift
+ * - Immersive "Sur le glacier (AWS)" first-person camera right on the ice at 2,180 m!
  */
 export class GlacierScene {
   constructor(canvas, meta, demU16, rgbTex, maskTex) {
@@ -40,30 +38,30 @@ export class GlacierScene {
       boost: 2.2,
       compareClean: false,
       hour: 13.0,
-      autoSun: true,
       depProgress: 0.0,
-      plumeDensity: 0.5,
-      cloudCover: 0.5,
+      plumeDensity: 0.4,
+      cloudCover: 0.4,
       precipMmH: 0.0,
       rainSnowM: 2600.0,
-      snowCumMm: 0.0,
+      snowPackMm: 0.0,
       windSpeed: 5.0,
       windBearingDeg: 245,
       swIn: 350.0,
       lwIn: 315.0,
       wetFrac: 0.0,
-      dailyDepMgM2: 22.4,
+      totalDepMgM2: 36.8,
     };
 
     this._sunDir = new THREE.Vector3(0.3, 0.7, 0.6).normalize();
 
     this._initRenderer();
-    this._initLightingAndSunDisc();
+    this._initSkyDomeAndLighting();
     this._buildTerrain(rgbTex, maskTex);
     this._buildVolumetricSmoke();
     this._buildCloudDeck();
-    this._buildRainStreaks();
-    this._buildSnowFlurries();
+    this._buildRainCurtains();
+    this._buildNearAndValleyRain();
+    this._buildRealisticSnow();
     this._initCameraPresets();
     this.resize();
   }
@@ -72,6 +70,12 @@ export class GlacierScene {
     const col = Math.max(0, Math.min(this.G - 1, Math.round(u * (this.G - 1))));
     const row = Math.max(0, Math.min(this.G - 1, Math.round(v * (this.G - 1))));
     return this.demZ[row * this.G + col];
+  }
+
+  _sampleDemXZ(x, z) {
+    const u = Math.max(0, Math.min(1, x / this.sizeX + 0.5));
+    const v = Math.max(0, Math.min(1, z / this.sizeY + 0.5));
+    return this._sampleDemNormalized(u, v);
   }
 
   _initRenderer() {
@@ -85,29 +89,133 @@ export class GlacierScene {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.04;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0b1422);
-    this.scene.fog = new THREE.FogExp2(0x0d1726, 0.013);
+    this.scene.fog = new THREE.FogExp2(0x101c2c, 0.012);
 
-    this.camera = new THREE.PerspectiveCamera(38, 16 / 9, 0.1, 220);
+    this.camera = new THREE.PerspectiveCamera(38, 16 / 9, 0.04, 260);
     this.camera.position.set(9.4, 8.5, -10.3);
 
     this.controls = new OrbitControls(this.camera, this.canvas);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.065;
-    this.controls.minDistance = 3.0;
+    this.controls.minDistance = 0.45;
     this.controls.maxDistance = 30.0;
-    this.controls.maxPolarAngle = Math.PI * 0.485;
+    this.controls.maxPolarAngle = Math.PI * 0.495;
     this.controls.target.set(0.0, 0.55, 0.15);
     this.controls.update();
 
     this._camAnim = null;
   }
 
-  _initLightingAndSunDisc() {
+  _initSkyDomeAndLighting() {
+    // Full procedural atmospheric Sky Dome (sunrise/sunset twilight, solar Mie halo, starry night, smoke & storm skies!)
+    this.skyUniforms = {
+      uSunDir: { value: this._sunDir.clone() },
+      uDaylight: { value: 0.8 },
+      uTwilight: { value: 0.0 },
+      uSmoke: { value: 0.3 },
+      uCloud: { value: 0.3 },
+      uSwNorm: { value: 0.6 },
+    };
+
+    const skyGeo = new THREE.SphereGeometry(145, 48, 32);
+    const skyMat = new THREE.ShaderMaterial({
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      uniforms: this.skyUniforms,
+      vertexShader: `
+        varying vec3 vDir;
+        void main() {
+          vDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        precision highp float;
+        uniform vec3 uSunDir;
+        uniform float uDaylight;
+        uniform float uTwilight;
+        uniform float uSmoke;
+        uniform float uCloud;
+        uniform float uSwNorm;
+        varying vec3 vDir;
+
+        float hash31(vec3 p) {
+          p = fract(p * vec3(443.897, 441.423, 437.195));
+          p += dot(p, p.yzx + 19.19);
+          return fract((p.x + p.y) * p.z);
+        }
+
+        void main() {
+          vec3 d = normalize(vDir);
+          float h = clamp(d.y, -0.25, 1.0);
+          float horiz = pow(1.0 - max(h, 0.0), 3.2);
+
+          // Night alpine sky
+          vec3 nightZen = vec3(0.015, 0.028, 0.058);
+          vec3 nightHor = vec3(0.045, 0.072, 0.125);
+          vec3 skyNight = mix(nightZen, nightHor, horiz);
+
+          // Clear high-altitude Rocky Mountain blue sky
+          vec3 clearZen = vec3(0.075, 0.215, 0.440);
+          vec3 clearHor = vec3(0.420, 0.590, 0.770);
+          vec3 skyClear = mix(clearZen, clearHor, horiz);
+
+          // Moody overcast storm sky
+          vec3 stormZen = vec3(0.145, 0.190, 0.250);
+          vec3 stormHor = vec3(0.320, 0.370, 0.430);
+          vec3 skyStorm = mix(stormZen, stormHor, horiz);
+
+          // Wildfire smoky bronze-amber sky
+          vec3 smokeZen = vec3(0.190, 0.145, 0.115);
+          vec3 smokeHor = vec3(0.470, 0.300, 0.175);
+          vec3 skySmoke = mix(smokeZen, smokeHor, horiz);
+
+          vec3 daySky = mix(skyClear, skyStorm, clamp(uCloud * 0.78, 0.0, 1.0));
+          daySky = mix(daySky, skySmoke, clamp(uSmoke * 0.72, 0.0, 1.0));
+
+          // Golden / rose alpine sunrise & sunset glow along the sun horizon
+          float sunDot = max(dot(d, normalize(uSunDir)), 0.0);
+          vec3 twilightBand = mix(vec3(0.85, 0.36, 0.16), vec3(0.98, 0.68, 0.36), pow(sunDot, 2.0));
+          daySky = mix(daySky, twilightBand, uTwilight * horiz * (0.45 + 0.55 * pow(sunDot, 1.5)) * (1.0 - uCloud * 0.45));
+
+          vec3 col = mix(skyNight, daySky, uDaylight);
+
+          // Subtle below-horizon ground reflection for orbital block view
+          if (h < 0.0) {
+            col = mix(col, vec3(0.04, 0.06, 0.095), clamp(-h * 5.0, 0.0, 0.85));
+          }
+
+          // Visible solar disc & Mie scattering corona (blazing on clear days, eerie red-orange in smoke!)
+          if (uDaylight > 0.05 && uSunDir.y > -0.02) {
+            float disc = smoothstep(0.9986, 0.9996, sunDot);
+            float halo = pow(sunDot, 18.0) * 0.42 + pow(sunDot, 120.0) * 0.65;
+            vec3 sunTint = mix(vec3(1.0, 0.96, 0.86), vec3(1.0, 0.44, 0.14), clamp(uSmoke * 0.9 + uTwilight * 0.6, 0.0, 1.0));
+            float visPower = (0.25 + 0.85 * uSwNorm) * (1.0 - uCloud * 0.52) * uDaylight;
+            col += sunTint * (halo * 0.65 + disc * 1.8) * visPower;
+          }
+
+          // Crisp alpine stars at night (when clear sky & dark)
+          float nightClear = (1.0 - uDaylight) * (1.0 - uCloud * 0.85) * (1.0 - uSmoke * 0.7) * smoothstep(0.08, 0.35, h);
+          if (nightClear > 0.05) {
+            vec3 cell = floor(d * 240.0);
+            float rnd = hash31(cell);
+            float star = smoothstep(0.9965, 0.9998, rnd);
+            col += vec3(0.85, 0.92, 1.0) * star * nightClear * 0.9;
+          }
+
+          gl_FragColor = vec4(col, 1.0);
+        }
+      `,
+    });
+    this.skyDome = new THREE.Mesh(skyGeo, skyMat);
+    this.scene.add(this.skyDome);
+
+    // Lighting
     this.hemiLight = new THREE.HemisphereLight(0x88c4ff, 0x2a211b, 0.72);
     this.scene.add(this.hemiLight);
 
@@ -132,8 +240,7 @@ export class GlacierScene {
     this.rimLight.position.set(-10, 6, -12);
     this.scene.add(this.rimLight);
 
-    // Subtle dark architectural shadow floor under the cutaway block
-    const floorGeo = new THREE.PlaneGeometry(110, 110);
+    const floorGeo = new THREE.PlaneGeometry(130, 130);
     floorGeo.rotateX(-Math.PI / 2);
     const floorMat = new THREE.MeshStandardMaterial({
       color: 0x091019,
@@ -144,34 +251,6 @@ export class GlacierScene {
     this.floorMesh.position.y = -this.skirtDepth - 0.015;
     this.floorMesh.receiveShadow = true;
     this.scene.add(this.floorMesh);
-
-    // Visible atmospheric solar disc / corona driven by real hourly SWin & smoke dimming
-    const sunCanvas = document.createElement("canvas");
-    sunCanvas.width = 128;
-    sunCanvas.height = 128;
-    const sctx = sunCanvas.getContext("2d");
-    const grad = sctx.createRadialGradient(64, 64, 2, 64, 64, 62);
-    grad.addColorStop(0.0, "rgba(255, 255, 245, 1.0)");
-    grad.addColorStop(0.18, "rgba(255, 242, 200, 0.85)");
-    grad.addColorStop(0.45, "rgba(255, 200, 120, 0.28)");
-    grad.addColorStop(1.0, "rgba(255, 160, 70, 0.0)");
-    sctx.fillStyle = grad;
-    sctx.fillRect(0, 0, 128, 128);
-    const sunTex = new THREE.CanvasTexture(sunCanvas);
-    sunTex.colorSpace = THREE.SRGBColorSpace;
-
-    this.sunMat = new THREE.SpriteMaterial({
-      map: sunTex,
-      color: 0xfff3d6,
-      transparent: true,
-      opacity: 0.85,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-      fog: false,
-    });
-    this.sunSprite = new THREE.Sprite(this.sunMat);
-    this.sunSprite.scale.set(5.5, 5.5, 1);
-    this.scene.add(this.sunSprite);
   }
 
   _buildTerrain(rgbTex, maskTex) {
@@ -215,10 +294,7 @@ export class GlacierScene {
     let ptr = 0;
     for (let r = 0; r < G - 1; r++) {
       for (let c = 0; c < G - 1; c++) {
-        const i00 = r * G + c;
-        const i01 = i00 + 1;
-        const i10 = i00 + G;
-        const i11 = i10 + 1;
+        const i00 = r * G + c, i01 = i00 + 1, i10 = i00 + G, i11 = i10 + 1;
         indices[ptr++] = i00; indices[ptr++] = i10; indices[ptr++] = i11;
         indices[ptr++] = i00; indices[ptr++] = i11; indices[ptr++] = i01;
       }
@@ -240,7 +316,7 @@ export class GlacierScene {
       uDepCumFrac: { value: 0.0 },
       uDepBoost: { value: this.state.boost },
       uRainSnowM: { value: this.state.rainSnowM },
-      uSnowCumMm: { value: 0.0 },
+      uSnowPackMm: { value: 0.0 },
       uRainIntensity: { value: 0.0 },
       uZMinM: { value: this.meta.zMinM },
       uZRangeKm: { value: this.zRangeKm },
@@ -263,14 +339,16 @@ export class GlacierScene {
           attribute float aBaseElev;
           varying float vBaseElev;
           varying vec3 vObjPos;
-          varying vec2 vTerrainUv;`
+          varying vec2 vTerrainUv;
+          varying float vSlopeUp;`
         )
         .replace(
           "#include <begin_vertex>",
           `#include <begin_vertex>
           vBaseElev = aBaseElev;
           vObjPos = position;
-          vTerrainUv = uv;`
+          vTerrainUv = uv;
+          vSlopeUp = clamp(normal.y, 0.0, 1.0);`
         );
 
       shader.fragmentShader = shader.fragmentShader
@@ -284,7 +362,7 @@ export class GlacierScene {
           uniform float uDepCumFrac;
           uniform float uDepBoost;
           uniform float uRainSnowM;
-          uniform float uSnowCumMm;
+          uniform float uSnowPackMm;
           uniform float uRainIntensity;
           uniform float uZMinM;
           uniform float uZRangeKm;
@@ -292,6 +370,7 @@ export class GlacierScene {
           varying float vBaseElev;
           varying vec3 vObjPos;
           varying vec2 vTerrainUv;
+          varying float vSlopeUp;
 
           float hash21(vec2 p) {
             p = fract(p * vec2(123.34, 456.21));
@@ -299,18 +378,16 @@ export class GlacierScene {
             return fract(p.x * p.y);
           }
           float vnoise(vec2 p) {
-            vec2 i = floor(p);
-            vec2 f = fract(p);
+            vec2 i = floor(p); vec2 f = fract(p);
             f = f * f * (3.0 - 2.0 * f);
-            float a = hash21(i);
-            float b = hash21(i + vec2(1.0, 0.0));
-            float c = hash21(i + vec2(0.0, 1.0));
-            float d = hash21(i + vec2(1.0, 1.0));
-            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+            return mix(
+              mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
+              mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x),
+              f.y
+            );
           }
           float fbm(vec2 p) {
-            float v = 0.0;
-            float a = 0.5;
+            float v = 0.0, a = 0.5;
             for (int i = 0; i < 4; i++) {
               v += a * vnoise(p);
               p = p * 2.07 + vec2(13.1, 7.7);
@@ -344,7 +421,6 @@ export class GlacierScene {
           float isSnow = isCryo * smoothstep(0.38, 0.58, visAlb);
           float isIce = isCryo * (1.0 - smoothstep(0.38, 0.58, visAlb));
 
-          // Tactile snow sastrugi & grain micro-shading
           vec2 windAligned = vec2(
             dot(vObjPos.xz, uWindDir),
             dot(vObjPos.xz, vec2(-uWindDir.y, uWindDir.x))
@@ -356,36 +432,39 @@ export class GlacierScene {
           float plumePattern = 0.68 + 0.46 * fbm(vObjPos.xz * 0.55 + uWindDir * 1.4) + 0.22 * (1.0 - elevT);
           float localDepNorm = clamp(uDepCumFrac * plumePattern, 0.0, 1.35);
 
-          // Fresh snow dusting above the live Jennings rain-snow elevation (albedo reset!)
-          float aboveSnowLine = smoothstep(uRainSnowM - 90.0, uRainSnowM + 140.0, elevM);
-          float slopeMask = clamp(0.45 + 0.55 * sastrugi, 0.0, 1.0);
-          float freshSnow = clamp(uSnowCumMm / 12.0, 0.0, 1.0) * aboveSnowLine * mix(0.65, 1.0, slopeMask);
+          // Slope-aware multi-day fresh snowpack! Steep cliffs shed snow naturally; gentler bowls & ice hold fresh snow!
+          float snowDepthNorm = clamp(uSnowPackMm / 18.0, 0.0, 1.0);
+          // Snow lingers longer higher up, retreats upward as it melts
+          float snowLineEff = mix(2550.0, 2060.0, snowDepthNorm);
+          float elevMask = smoothstep(snowLineEff - 120.0, snowLineEff + 180.0, elevM);
+          float slopeHold = smoothstep(0.56, 0.86, vSlopeUp + 0.14 * sastrugi);
+          float freshSnow = snowDepthNorm * elevMask * slopeHold * (0.72 + 0.35 * sastrugi);
+          freshSnow = clamp(freshSnow, 0.0, 0.92);
 
-          // Wet surface darkening below rain-snow line when raining
-          float belowSnowLine = 1.0 - aboveSnowLine;
-          float wetSurface = clamp(uRainIntensity * 0.45, 0.0, 0.6) * belowSnowLine;
+          // Active rain wets lower bare ice & dark rock below live rain-snow line
+          float belowRainLine = 1.0 - smoothstep(uRainSnowM - 90.0, uRainSnowM + 110.0, elevM);
+          float wetSurface = clamp(uRainIntensity * 0.50, 0.0, 0.65) * belowRainLine;
 
           if (uMode < 0.5) {
-            // Mode 0: True-color Sentinel-2 + micro-relief + FireWork soot darkening + fresh snow reset + rain wetting
             diffuseColor.rgb *= microShade;
             diffuseColor.rgb *= mix(vec3(1.0), vec3(0.84, 0.89, 0.95), isSnow * 0.45);
 
             float sootCover = clamp(localDepNorm * 0.24 * uDepBoost * (0.35 + 0.65 * isCryo), 0.0, 0.82);
             float impurityEnrich = mix(1.0, 1.25, isIce) * (0.78 + 0.44 * fbm(vObjPos.xz * 3.2));
             sootCover = clamp(sootCover * impurityEnrich, 0.0, 0.84);
-            // Fresh snowfall buries deposited wildfire soot above the rain-snow line!
-            sootCover *= (1.0 - freshSnow * 0.82);
+            // Fresh snow buries wildfire soot and resets surface albedo!
+            sootCover *= (1.0 - freshSnow * 0.88);
 
             vec3 sootTint = mix(vec3(0.042, 0.034, 0.026), vec3(0.020, 0.018, 0.017), isIce);
             diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.28 + sootTint * 0.72, sootCover * isCryo);
             diffuseColor.rgb *= (1.0 - sootCover * 0.16 * (1.0 - isCryo));
 
-            // Rain wets rock & moraines slightly darker
-            diffuseColor.rgb *= (1.0 - wetSurface * 0.24 * (1.0 - isSnow));
+            // Rain wets rock & moraines darker
+            diffuseColor.rgb *= (1.0 - wetSurface * 0.28 * (1.0 - isSnow));
 
-            // Fresh snow coat whitens upper rocks & re-brightens high glacier zones cleanly
-            vec3 freshSnowCol = vec3(0.66, 0.73, 0.82) * (0.90 + 0.16 * sastrugi);
-            diffuseColor.rgb = mix(diffuseColor.rgb, freshSnowCol, freshSnow * 0.72);
+            // Crisp fresh alpine snow blanket (realistic cool luminance, never blown-out flat white)
+            vec3 freshSnowCol = vec3(0.64, 0.71, 0.81) * (0.88 + 0.20 * sastrugi);
+            diffuseColor.rgb = mix(diffuseColor.rgb, freshSnowCol, freshSnow * 0.86);
           } else if (uMode < 1.5) {
             float luma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
             vec3 hm = depHeatmap(clamp(localDepNorm * 0.95, 0.0, 1.0));
@@ -402,7 +481,6 @@ export class GlacierScene {
             diffuseColor.rgb = mix(vec3(0.26, 0.29, 0.34), vec3(0.58, 0.63, 0.70), elevT) * microShade;
           }
 
-          // Optional crisp 100 m / 500 m contour lines
           if (uContours > 0.5) {
             float c100 = abs(fract(elevM / 100.0 + 0.5) - 0.5);
             float c500 = abs(fract(elevM / 500.0 + 0.5) - 0.5);
@@ -414,7 +492,6 @@ export class GlacierScene {
             diffuseColor.rgb = mix(diffuseColor.rgb, lc, clamp(l100 * 0.34 + l500 * 0.50, 0.0, 0.75));
           }
 
-          // Live glowing Jennings rain-snow elevation line (when within domain 1870..3490 m)
           if (uShowIsotherm > 0.5 && uRainSnowM > 1880.0 && uRainSnowM < 3480.0) {
             float dIso = abs(elevM - uRainSnowM);
             float isoW = max(fwidth(elevM) * 2.2, 16.0);
@@ -437,8 +514,7 @@ export class GlacierScene {
           rVal = mix(rVal, 0.34, isIceR);
           rVal = mix(rVal, 0.10, smoothstep(0.25, 0.65, mskR.b));
           rVal = mix(rVal, 0.85, clamp(uDepCumFrac * 0.32 * isCryoR, 0.0, 0.5));
-          // Active rain lowers roughness on lower tongue & wet rock -> authentic wet specular reflection!
-          rVal = mix(rVal, 0.18, clamp(uRainIntensity * 0.32, 0.0, 0.55) * belowR);
+          rVal = mix(rVal, 0.15, clamp(uRainIntensity * 0.38, 0.0, 0.62) * belowR);
           roughnessFactor = rVal;`
         );
     };
@@ -452,21 +528,15 @@ export class GlacierScene {
   }
 
   _buildCutawaySkirt() {
-    const G = this.G;
-    const sizeX = this.sizeX;
-    const sizeY = this.sizeY;
-    const yb = -this.skirtDepth;
-
+    const G = this.G, sizeX = this.sizeX, sizeY = this.sizeY, yb = -this.skirtDepth;
     const pos = [], nrm = [], baseRim = [], idx = [];
     let vOff = 0;
     const addSide = (sampleFn, nx, ny, nz) => {
       const start = vOff;
       for (let i = 0; i < G; i++) {
         const p = sampleFn(i);
-        pos.push(p.x, p.y0 * this.state.exag, p.z);
-        nrm.push(nx, ny, nz); baseRim.push(p.y0);
-        pos.push(p.x, yb, p.z);
-        nrm.push(nx, ny, nz); baseRim.push(-1.0);
+        pos.push(p.x, p.y0 * this.state.exag, p.z); nrm.push(nx, ny, nz); baseRim.push(p.y0);
+        pos.push(p.x, yb, p.z); nrm.push(nx, ny, nz); baseRim.push(-1.0);
         vOff += 2;
       }
       for (let i = 0; i < G - 1; i++) {
@@ -474,7 +544,6 @@ export class GlacierScene {
         idx.push(t0, b0, b1, t0, b1, t1);
       }
     };
-
     addSide((i) => ({ x: (i / (G - 1) - 0.5) * sizeX, z: -sizeY * 0.5, y0: this.demZ[i] }), 0, 0, -1);
     addSide((i) => ({ x: sizeX * 0.5, z: (i / (G - 1) - 0.5) * sizeY, y0: this.demZ[i * G + (G - 1)] }), 1, 0, 0);
     addSide((i) => { const c = G - 1 - i; return { x: (c / (G - 1) - 0.5) * sizeX, z: sizeY * 0.5, y0: this.demZ[(G - 1) * G + c] }; }, 0, 0, 1);
@@ -492,12 +561,7 @@ export class GlacierScene {
     this.skirtGeo = skirtGeo;
     this.skirtBaseRim = new Float32Array(baseRim);
 
-    const skirtMat = new THREE.MeshStandardMaterial({
-      color: 0x121924,
-      roughness: 0.88,
-      metalness: 0.08,
-      side: THREE.DoubleSide,
-    });
+    const skirtMat = new THREE.MeshStandardMaterial({ color: 0x121924, roughness: 0.88, metalness: 0.08, side: THREE.DoubleSide });
     this.skirtMesh = new THREE.Mesh(skirtGeo, skirtMat);
     this.skirtMesh.castShadow = true;
     this.skirtMesh.receiveShadow = true;
@@ -505,11 +569,10 @@ export class GlacierScene {
   }
 
   _buildVolumetricSmoke() {
-    // 5 terrain-draped undulating 3D smoke volumes hugging the glacier valley & rolling over ridges (NO dots!)
     this.smokeGroup = new THREE.Group();
     this.smokeSharedUniforms = {
       uTime: { value: 0.0 },
-      uDensity: { value: 0.5 },
+      uDensity: { value: 0.45 },
       uWindDir: { value: new THREE.Vector2(0.85, -0.52) },
       uSunDir: { value: this._sunDir.clone() },
       uSunPower: { value: 0.6 },
@@ -517,27 +580,18 @@ export class GlacierScene {
       uExag: { value: this.state.exag },
     };
 
-    const S = 76; // smooth contoured grid following exact glacier topography
+    const S = 72;
     const basePos = new Float32Array(S * S * 3);
     const baseDem = new Float32Array(S * S);
     const uvs = new Float32Array(S * S * 2);
     for (let r = 0; r < S; r++) {
-      const v = r / (S - 1);
-      const z = (v - 0.5) * this.sizeY * 1.12;
+      const v = r / (S - 1), z = (v - 0.5) * this.sizeY * 1.12;
       for (let c = 0; c < S; c++) {
-        const u = c / (S - 1);
-        const x = (u - 0.5) * this.sizeX * 1.12;
+        const u = c / (S - 1), x = (u - 0.5) * this.sizeX * 1.12;
         const idx = r * S + c;
-        const y0 = this._sampleDemNormalized(
-          Math.max(0, Math.min(1, (x / this.sizeX) + 0.5)),
-          Math.max(0, Math.min(1, (z / this.sizeY) + 0.5))
-        );
-        basePos[idx * 3 + 0] = x;
-        basePos[idx * 3 + 1] = 0;
-        basePos[idx * 3 + 2] = z;
-        baseDem[idx] = y0;
-        uvs[idx * 2 + 0] = u;
-        uvs[idx * 2 + 1] = v;
+        basePos[idx * 3 + 0] = x; basePos[idx * 3 + 1] = 0; basePos[idx * 3 + 2] = z;
+        baseDem[idx] = this._sampleDemXZ(x, z);
+        uvs[idx * 2 + 0] = u; uvs[idx * 2 + 1] = v;
       }
     }
     const idxArr = [];
@@ -553,13 +607,12 @@ export class GlacierScene {
     sharedGeo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
     sharedGeo.setIndex(idxArr);
 
-    // Lower strata hug the glacier valley floor tightly; upper strata smooth out into drifting wildfire plumes
     const layers = [
-      { heightAbove: 0.16, follow: 0.88, alpha: 0.34, scale: 2.8, speed: 0.72, seed: 1.3 },
-      { heightAbove: 0.44, follow: 0.72, alpha: 0.32, scale: 2.3, speed: 0.90, seed: 4.1 },
-      { heightAbove: 0.82, follow: 0.54, alpha: 0.28, scale: 1.9, speed: 1.08, seed: 7.9 },
-      { heightAbove: 1.30, follow: 0.32, alpha: 0.24, scale: 1.6, speed: 1.24, seed: 11.4 },
-      { heightAbove: 1.90, follow: 0.12, alpha: 0.20, scale: 1.4, speed: 1.42, seed: 15.8 },
+      { heightAbove: 0.22, follow: 0.85, alpha: 0.30, scale: 2.7, speed: 0.72, seed: 1.3 },
+      { heightAbove: 0.52, follow: 0.70, alpha: 0.29, scale: 2.2, speed: 0.90, seed: 4.1 },
+      { heightAbove: 0.90, follow: 0.52, alpha: 0.26, scale: 1.9, speed: 1.08, seed: 7.9 },
+      { heightAbove: 1.38, follow: 0.30, alpha: 0.22, scale: 1.6, speed: 1.24, seed: 11.4 },
+      { heightAbove: 1.98, follow: 0.12, alpha: 0.19, scale: 1.4, speed: 1.42, seed: 15.8 },
     ];
 
     layers.forEach((cfg) => {
@@ -588,13 +641,9 @@ export class GlacierScene {
           varying vec2 vUv;
           varying vec3 vWorldPos;
           varying float vElevNorm;
-
           void main() {
             vUv = uv;
-            float terrainY = aDemY0 * uExag;
-            float flatY = 0.75 * uExag;
-            float baseY = mix(flatY, terrainY, uFollow) + uHeightAbove;
-            // Gentle rolling billowing waves advecting downwind
+            float baseY = mix(0.75 * uExag, aDemY0 * uExag, uFollow) + uHeightAbove;
             float phase = dot(position.xz, uWindDir) * 0.65 - uTime * 0.45 * uSpeedMul + uSeed;
             float billow = sin(phase) * 0.08 + cos(position.x * 0.55 - position.z * 0.45 + uTime * 0.3) * 0.06;
             vec3 pos = vec3(position.x, baseY + billow, position.z);
@@ -620,100 +669,67 @@ export class GlacierScene {
           varying vec3 vWorldPos;
           varying float vElevNorm;
 
-          float hash(vec2 p) {
-            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-          }
+          float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
           float noise(vec2 p) {
-            vec2 i = floor(p);
-            vec2 f = fract(p);
-            f = f * f * (3.0 - 2.0 * f);
-            return mix(
-              mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
-              mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x),
-              f.y
-            );
+            vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
+            return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
           }
           float fbm(vec2 p) {
-            float v = 0.0;
-            float a = 0.5;
-            for (int i = 0; i < 5; i++) {
-              v += a * noise(p);
-              p = p * 2.04 + vec2(7.3, 11.9);
-              a *= 0.5;
-            }
+            float v=0.0, a=0.5;
+            for (int i=0; i<5; i++) { v += a*noise(p); p = p*2.04+vec2(7.3,11.9); a*=0.5; }
             return v;
           }
-
           void main() {
             if (uDensity < 0.02) discard;
-            vec2 c = vUv * 2.0 - 1.0;
-            // Soft radial vignette so smoke dissolves naturally beyond the 11x11 km block
-            float edge = 1.0 - smoothstep(0.42, 0.96, max(abs(c.x), abs(c.y)) * 0.55 + length(c) * 0.55);
+            // Fade smoke very close to camera so first-person glacier view stays breathable!
+            float camDist = length(vWorldPos - cameraPosition);
+            float nearFade = smoothstep(0.35, 1.6, camDist);
 
-            // Domain-warped curling smoke tendrils drifting with real wind
+            vec2 c = vUv * 2.0 - 1.0;
+            float edge = 1.0 - smoothstep(0.42, 0.96, max(abs(c.x), abs(c.y)) * 0.55 + length(c) * 0.55);
             vec2 drift = uWindDir * uTime * 0.16 * uSpeedMul;
             vec2 q = vUv * uNoiseScale - drift + vec2(uSeed);
             vec2 warp = vec2(fbm(q + vec2(1.7, 9.2)), fbm(q + vec2(8.3, 2.8)));
             float n = fbm(q + 0.65 * warp - drift * 0.35);
 
-            // Smoke pools richer in the glacial valley trough
             float valleyPool = 1.15 - 0.38 * vElevNorm;
             float cloud = smoothstep(0.30, 0.78, n * valleyPool);
-            float alpha = cloud * edge * uDensity * uLayerAlpha;
+            float alpha = cloud * edge * nearFade * uDensity * uLayerAlpha;
             if (alpha < 0.004) discard;
 
-            // Mie forward-scattering glow when backlit by sunlight through wildfire smoke
             vec3 viewDir = normalize(vWorldPos - cameraPosition);
             float fwd = pow(max(dot(viewDir, normalize(uSunDir)), 0.0), 4.0) * uSunPower;
-
-            vec3 dryDark = vec3(0.20, 0.17, 0.15);
-            vec3 dryLit = vec3(0.72, 0.50, 0.30);
-            vec3 wetDark = vec3(0.24, 0.28, 0.33);
-            vec3 wetLit = vec3(0.58, 0.63, 0.69);
-
-            vec3 baseDark = mix(dryDark, wetDark, uWetFrac * 0.75);
-            vec3 baseLit = mix(dryLit, wetLit, uWetFrac * 0.75);
+            vec3 baseDark = mix(vec3(0.20, 0.17, 0.15), vec3(0.24, 0.28, 0.33), uWetFrac * 0.72);
+            vec3 baseLit  = mix(vec3(0.72, 0.50, 0.30), vec3(0.58, 0.63, 0.69), uWetFrac * 0.72);
             vec3 col = mix(baseDark, baseLit, clamp(0.22 + 0.65 * uSunPower + 0.35 * cloud, 0.0, 1.0));
             col += vec3(0.55, 0.32, 0.12) * fwd * (1.0 - uWetFrac * 0.6);
-
             gl_FragColor = vec4(col, alpha);
           }
         `,
       });
-      const mesh = new THREE.Mesh(sharedGeo, mat);
-      this.smokeGroup.add(mesh);
+      this.smokeGroup.add(new THREE.Mesh(sharedGeo, mat));
     });
     this.scene.add(this.smokeGroup);
   }
 
   _buildCloudDeck() {
-    // High alpine stratus overcast deck driven by real hourly LWin (W m-2)
     this.cloudUniforms = {
       uTime: { value: 0.0 },
       uCloudCover: { value: 0.4 },
       uWindDir: { value: new THREE.Vector2(0.85, -0.52) },
       uSunPower: { value: 0.5 },
     };
-    const geo = new THREE.PlaneGeometry(24, 24, 1, 1);
+    const geo = new THREE.PlaneGeometry(34, 34, 1, 1);
     geo.rotateX(-Math.PI / 2);
     const mat = new THREE.ShaderMaterial({
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
       uniforms: this.cloudUniforms,
-      vertexShader: `
-        varying vec2 vUv;
-        void main() {
-          vUv = uv;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        }
-      `,
+      vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
       fragmentShader: `
         precision mediump float;
-        uniform float uTime;
-        uniform float uCloudCover;
-        uniform vec2 uWindDir;
-        uniform float uSunPower;
+        uniform float uTime; uniform float uCloudCover; uniform vec2 uWindDir; uniform float uSunPower;
         varying vec2 vUv;
         float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         float noise(vec2 p) {
@@ -728,45 +744,128 @@ export class GlacierScene {
         void main() {
           if (uCloudCover < 0.08) discard;
           vec2 c = vUv * 2.0 - 1.0;
-          float edge = 1.0 - smoothstep(0.40, 0.98, length(c));
-          vec2 p = vUv * 4.2 - uWindDir * uTime * 0.08;
-          float n = fbm(p);
-          float alpha = smoothstep(0.32, 0.76, n) * edge * uCloudCover * 0.34;
+          float edge = 1.0 - smoothstep(0.35, 0.98, length(c));
+          float n = fbm(vUv * 4.8 - uWindDir * uTime * 0.08);
+          float alpha = smoothstep(0.28, 0.76, n) * edge * uCloudCover * 0.42;
           if (alpha < 0.005) discard;
-          vec3 col = mix(vec3(0.18, 0.23, 0.30), vec3(0.68, 0.74, 0.80), 0.25 + 0.65 * uSunPower);
+          vec3 col = mix(vec3(0.16, 0.21, 0.28), vec3(0.68, 0.75, 0.82), 0.22 + 0.68 * uSunPower);
           gl_FragColor = vec4(col, alpha);
         }
       `,
     });
     this.cloudMesh = new THREE.Mesh(geo, mat);
-    this.cloudMesh.position.y = 4.35;
+    this.cloudMesh.position.y = 4.4;
     this.scene.add(this.cloudMesh);
   }
 
-  _buildRainStreaks() {
-    // 7,000 sleek wind-slanted 3D rain streaks falling ONLY below the live Jennings rain-snow elevation!
-    const COUNT = 7000;
-    const pos = new Float32Array(COUNT * 2 * 3);
-    const seed = new Float32Array(COUNT * 2 * 4); // [phase, speed, endFlag (0=head,1=tail), surfY0]
+  _buildRainCurtains() {
+    // 4 volumetric diagonal storm rain-shaft sheets sweeping across the glacier valley!
+    this.rainCurtainGroup = new THREE.Group();
+    this.rainCurtainUniforms = {
+      uTime: { value: 0.0 },
+      uIntensity: { value: 0.0 },
+      uSunPower: { value: 0.5 },
+      uRainSnowM: { value: this.state.rainSnowM },
+      uZMinM: { value: this.meta.zMinM },
+      uExag: { value: this.state.exag },
+    };
 
-    for (let i = 0; i < COUNT; i++) {
-      const u = Math.random();
-      const v = Math.random();
-      const x = (u - 0.5) * this.sizeX * 0.98;
-      const z = (v - 0.5) * this.sizeY * 0.98;
-      const surfY0 = this._sampleDemNormalized(u, v);
+    const curtainConfigs = [
+      { x: 1.2, z: -1.6, rotY: 0.68, w: 6.5, h: 3.6, seed: 1.1 },
+      { x: 0.0, z: -0.2, rotY: 0.68, w: 7.2, h: 3.8, seed: 3.4 },
+      { x: -1.4, z: 1.2, rotY: 0.68, w: 6.8, h: 3.6, seed: 6.2 },
+      { x: 1.8, z: -2.4, rotY: -0.55, w: 5.8, h: 3.4, seed: 8.7 },
+    ];
+
+    curtainConfigs.forEach((cfg) => {
+      const geo = new THREE.PlaneGeometry(cfg.w, cfg.h, 1, 1);
+      const mat = new THREE.ShaderMaterial({
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        uniforms: {
+          ...this.rainCurtainUniforms,
+          uSeed: { value: cfg.seed },
+        },
+        vertexShader: `
+          varying vec2 vUv;
+          varying vec3 vWorldPos;
+          void main() {
+            vUv = uv;
+            vec4 wp = modelMatrix * vec4(position, 1.0);
+            vWorldPos = wp.xyz;
+            gl_Position = projectionMatrix * viewMatrix * wp;
+          }
+        `,
+        fragmentShader: `
+          precision mediump float;
+          uniform float uTime;
+          uniform float uIntensity;
+          uniform float uSunPower;
+          uniform float uRainSnowM;
+          uniform float uZMinM;
+          uniform float uExag;
+          uniform float uSeed;
+          varying vec2 vUv;
+          varying vec3 vWorldPos;
+
+          float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float noise(vec2 p) {
+            vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
+            return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
+          }
+
+          void main() {
+            if (uIntensity < 0.04) discard;
+            float edgeX = smoothstep(0.0, 0.25, vUv.x) * smoothstep(1.0, 0.75, vUv.x);
+            float edgeY = smoothstep(0.0, 0.18, vUv.y) * smoothstep(1.0, 0.78, vUv.y);
+            // Vertical rain-shaft anisotropic streaks slanted slightly by wind
+            vec2 p = vec2((vUv.x + vUv.y * 0.18) * 14.0 + uTime * 0.35 + uSeed, vUv.y * 2.2 + uTime * 2.8);
+            float shaft = noise(p) * 0.65 + noise(p * 2.4 + vec2(3.1, 7.2)) * 0.35;
+            // Fade rain curtain smoothly above snowline!
+            float worldElevM = uZMinM + (vWorldPos.y / max(uExag, 0.1)) * 1000.0;
+            float inRain = 1.0 - smoothstep(uRainSnowM - 180.0, uRainSnowM + 450.0, worldElevM);
+            float alpha = smoothstep(0.28, 0.78, shaft) * edgeX * edgeY * clamp(uIntensity * 0.38, 0.0, 0.42) * (0.40 + 0.60 * inRain);
+            if (alpha < 0.004) discard;
+            vec3 col = mix(vec3(0.55, 0.66, 0.78), vec3(0.84, 0.91, 0.98), 0.30 + 0.55 * uSunPower);
+            gl_FragColor = vec4(col, alpha);
+          }
+        `,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(cfg.x, 1.95, cfg.z);
+      mesh.rotation.y = cfg.rotY;
+      this.rainCurtainGroup.add(mesh);
+    });
+    this.scene.add(this.rainCurtainGroup);
+  }
+
+  _buildNearAndValleyRain() {
+    // 14,000 ultra-realistic rain streaks: 9,000 in a dynamic camera-following near box ("comme si on était là"!)
+    // + 5,000 distributed across the full valley so rain looks rich at ANY zoom!
+    const NEAR = 9000;
+    const FAR = 5000;
+    const TOTAL = NEAR + FAR;
+    const pos = new Float32Array(TOTAL * 2 * 3);
+    const seed = new Float32Array(TOTAL * 2 * 4); // [phase, speed, endFlag, isNear (1=near box, 0=valley)]
+
+    for (let i = 0; i < TOTAL; i++) {
+      const isNear = i < NEAR ? 1.0 : 0.0;
+      const rx = isNear ? (Math.random() - 0.5) * 4.2 : (Math.random() - 0.5) * this.sizeX * 0.96;
+      const ry = Math.random(); // vertical offset seed
+      const rz = isNear ? (Math.random() - 0.5) * 4.2 : (Math.random() - 0.5) * this.sizeY * 0.96;
       const ph = Math.random();
-      const sp = 0.85 + Math.random() * 0.45;
+      const sp = 0.85 + Math.random() * 0.55;
 
       for (let end = 0; end < 2; end++) {
         const k = i * 2 + end;
-        pos[k * 3 + 0] = x;
-        pos[k * 3 + 1] = 0;
-        pos[k * 3 + 2] = z;
+        pos[k * 3 + 0] = rx;
+        pos[k * 3 + 1] = ry;
+        pos[k * 3 + 2] = rz;
         seed[k * 4 + 0] = ph;
         seed[k * 4 + 1] = sp;
         seed[k * 4 + 2] = end;
-        seed[k * 4 + 3] = surfY0;
+        seed[k * 4 + 3] = isNear;
       }
     }
 
@@ -782,6 +881,8 @@ export class GlacierScene {
       uWindSpeed: { value: 5.0 },
       uRainSnowM: { value: this.state.rainSnowM },
       uZMinM: { value: this.meta.zMinM },
+      uCamFocus: { value: new THREE.Vector3(0, 1.0, 0) },
+      uSunPower: { value: 0.5 },
     };
 
     const mat = new THREE.ShaderMaterial({
@@ -797,43 +898,65 @@ export class GlacierScene {
         uniform float uWindSpeed;
         uniform float uRainSnowM;
         uniform float uZMinM;
+        uniform vec3 uCamFocus;
         varying float vAlpha;
 
         void main() {
-          float active = step(aSeed.x, clamp(uIntensity * 0.95, 0.0, 1.0));
-          float t = fract(aSeed.x + uTime * 1.15 * aSeed.y);
-          float topY = 3.55 + max(0.0, (uExag - 1.3) * 1.4);
-          float groundY = aSeed.w * uExag;
-          float headY = mix(topY, groundY, t);
+          float active = step(aSeed.x, clamp(uIntensity * 0.96, 0.0, 1.0));
+          float isNear = aSeed.w;
+          float isTail = aSeed.z;
+          float t = fract(position.y + uTime * (isNear > 0.5 ? 2.1 : 1.35) * aSeed.y);
 
-          // Streak length & realistic wind slant
-          float streakH = 0.24 + 0.10 * clamp(uIntensity, 0.0, 1.5);
-          vec2 slant = uWindDir * (0.045 * uWindSpeed);
-          float isTail = aSeed.z; // 1 = upper tail behind head
+          vec3 p;
+          float streakH;
+          if (isNear > 0.5) {
+            // Dynamic 3D rain box wrapped seamlessly around the camera!
+            float boxW = 4.2;
+            float boxH = 2.6;
+            vec2 drift = uWindDir * uTime * (0.45 + 0.14 * uWindSpeed);
+            float wx = mod(position.x + drift.x - uCamFocus.x + boxW * 0.5, boxW) - boxW * 0.5 + uCamFocus.x;
+            float wz = mod(position.z + drift.y - uCamFocus.z + boxW * 0.5, boxW) - boxW * 0.5 + uCamFocus.z;
+            float wy = uCamFocus.y + (0.55 - t) * boxH;
+            streakH = 0.13 + 0.06 * aSeed.y;
+            p = vec3(wx, wy, wz);
+          } else {
+            float topY = 3.6 + max(0.0, (uExag - 1.3) * 1.4);
+            float wy = mix(topY, -0.05, t);
+            vec2 drift = uWindDir * t * (0.35 + 0.12 * uWindSpeed);
+            float wx = mod(position.x + drift.x + 5.5, 11.0) - 5.5;
+            float wz = mod(position.z + drift.y + 5.5, 11.0) - 5.5;
+            streakH = 0.40 + 0.16 * aSeed.y;
+            p = vec3(wx, wy, wz);
+          }
 
-          vec3 p = vec3(
-            position.x - slant.x * isTail + uWindDir.x * t * 0.45 * (uWindSpeed * 0.15),
-            headY + streakH * isTail,
-            position.z - slant.y * isTail + uWindDir.y * t * 0.45 * (uWindSpeed * 0.15)
-          );
-          p.x = mod(p.x + 5.5, 11.0) - 5.5;
-          p.z = mod(p.z + 5.5, 11.0) - 5.5;
+          // Realistic wind slant of falling rain streak
+          vec2 slant = uWindDir * (0.028 * uWindSpeed) * (isNear > 0.5 ? 0.75 : 1.35);
+          p.x -= slant.x * isTail;
+          p.z -= slant.y * isTail;
+          p.y += streakH * isTail;
 
           // Rain ONLY exists below the live Jennings rain-snow elevation!
-          float surfElevM = uZMinM + aSeed.w * 1000.0;
-          float rainZone = 1.0 - smoothstep(uRainSnowM - 100.0, uRainSnowM + 100.0, surfElevM);
-          float fade = smoothstep(0.0, 0.12, t) * (1.0 - smoothstep(0.92, 1.0, t));
-          vAlpha = active * rainZone * fade * clamp(uIntensity * 0.55, 0.0, 0.58) * (1.0 - 0.65 * isTail);
+          float ptElevM = uZMinM + (p.y / max(uExag, 0.1)) * 1000.0;
+          float rainZone = 1.0 - smoothstep(uRainSnowM - 90.0, uRainSnowM + 180.0, ptElevM);
+          float inBlock = step(abs(p.x), 5.6) * step(abs(p.z), 5.6);
+          float camDist = length(p - cameraPosition);
+          float distFade = isNear > 0.5
+            ? smoothstep(0.12, 0.45, camDist) * (1.0 - smoothstep(2.8, 4.2, camDist))
+            : smoothstep(0.8, 2.5, camDist);
 
+          float fadeV = smoothstep(0.0, 0.10, t) * (1.0 - smoothstep(0.90, 1.0, t));
+          vAlpha = active * inBlock * rainZone * distFade * fadeV * clamp(uIntensity * 0.85, 0.0, 0.86) * (1.0 - 0.60 * isTail);
           gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
         }
       `,
       fragmentShader: `
         precision mediump float;
+        uniform float uSunPower;
         varying float vAlpha;
         void main() {
           if (vAlpha < 0.01) discard;
-          gl_FragColor = vec4(0.68, 0.82, 0.96, vAlpha);
+          vec3 col = mix(vec3(0.68, 0.82, 0.96), vec3(0.92, 0.97, 1.0), 0.35 + 0.55 * uSunPower);
+          gl_FragColor = vec4(col, vAlpha);
         }
       `,
     });
@@ -843,31 +966,62 @@ export class GlacierScene {
     this.scene.add(this.rainLines);
   }
 
-  _buildSnowFlurries() {
-    // 8,000 gently fluttering translucent snowflakes falling ONLY above the live Jennings rain-snow elevation!
-    const COUNT = 8000;
-    const pos = new Float32Array(COUNT * 3);
-    const seed = new Float32Array(COUNT * 4); // [phase, speed, size, surfY0]
+  _makeSnowflakeTexture() {
+    // Soft feathery translucent snow-crystal bokeh texture (zero harsh circular dots!)
+    const c = document.createElement("canvas");
+    c.width = 64; c.height = 64;
+    const ctx = c.getContext("2d");
+    const g = ctx.createRadialGradient(32, 32, 1, 32, 32, 30);
+    g.addColorStop(0.0, "rgba(255,255,255,0.95)");
+    g.addColorStop(0.28, "rgba(236,245,255,0.68)");
+    g.addColorStop(0.62, "rgba(215,232,250,0.22)");
+    g.addColorStop(1.0, "rgba(200,225,250,0.0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
 
-    for (let i = 0; i < COUNT; i++) {
-      const u = Math.random();
-      const v = Math.random();
-      const x = (u - 0.5) * this.sizeX * 0.98;
-      const z = (v - 0.5) * this.sizeY * 0.98;
-      const surfY0 = this._sampleDemNormalized(u, v);
-      pos[i * 3 + 0] = x;
-      pos[i * 3 + 1] = 0;
-      pos[i * 3 + 2] = z;
+    // Subtle delicate 6-point crystalline sheen in the core
+    ctx.save();
+    ctx.translate(32, 32);
+    ctx.strokeStyle = "rgba(255,255,255,0.32)";
+    ctx.lineWidth = 1.5;
+    for (let i = 0; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-14, 0);
+      ctx.lineTo(14, 0);
+      ctx.stroke();
+      ctx.rotate(Math.PI / 3);
+    }
+    ctx.restore();
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  }
+
+  _buildRealisticSnow() {
+    // 12,000 dual-scale soft fluttering snowflakes: 6,500 camera-centered near-field ("comme si on était là"!)
+    // + 5,500 high-altitude glacier & peak flurries above the Jennings rain-snow line!
+    const NEAR = 6500;
+    const FAR = 5500;
+    const TOTAL = NEAR + FAR;
+    const pos = new Float32Array(TOTAL * 3);
+    const seed = new Float32Array(TOTAL * 4); // [phase, speed, size, isNear]
+
+    for (let i = 0; i < TOTAL; i++) {
+      const isNear = i < NEAR ? 1.0 : 0.0;
+      pos[i * 3 + 0] = isNear ? (Math.random() - 0.5) * 4.8 : (Math.random() - 0.5) * this.sizeX * 0.98;
+      pos[i * 3 + 1] = Math.random();
+      pos[i * 3 + 2] = isNear ? (Math.random() - 0.5) * 4.8 : (Math.random() - 0.5) * this.sizeY * 0.98;
       seed[i * 4 + 0] = Math.random();
-      seed[i * 4 + 1] = 0.65 + Math.random() * 0.7;
-      seed[i * 4 + 2] = 0.7 + Math.random() * 1.1;
-      seed[i * 4 + 3] = surfY0;
+      seed[i * 4 + 1] = 0.55 + Math.random() * 0.85;
+      seed[i * 4 + 2] = 0.55 + Math.random() * 1.45;
+      seed[i * 4 + 3] = isNear;
     }
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
     geo.setAttribute("aSeed", new THREE.BufferAttribute(seed, 4));
 
+    const flakeTex = this._makeSnowflakeTexture();
     this.snowUniforms = {
       uTime: { value: 0.0 },
       uIntensity: { value: 0.0 },
@@ -876,7 +1030,10 @@ export class GlacierScene {
       uWindSpeed: { value: 5.0 },
       uRainSnowM: { value: this.state.rainSnowM },
       uZMinM: { value: this.meta.zMinM },
+      uCamFocus: { value: new THREE.Vector3(0, 1.2, 0) },
+      uSunPower: { value: 0.5 },
       uPixelRatio: { value: Math.min(window.devicePixelRatio || 1, 2) },
+      uFlakeTex: { value: flakeTex },
     };
 
     const mat = new THREE.ShaderMaterial({
@@ -892,49 +1049,68 @@ export class GlacierScene {
         uniform float uWindSpeed;
         uniform float uRainSnowM;
         uniform float uZMinM;
+        uniform vec3 uCamFocus;
         uniform float uPixelRatio;
         varying float vAlpha;
 
         void main() {
           float active = step(aSeed.x, clamp(uIntensity * 0.98, 0.0, 1.0));
-          float t = fract(aSeed.x + uTime * 0.19 * aSeed.y);
-          float topY = 3.75 + max(0.0, (uExag - 1.3) * 1.5) + 0.5 * sin(aSeed.x * 23.0);
-          float groundY = aSeed.w * uExag + 0.02;
-          float y = mix(topY, groundY, t);
+          float isNear = aSeed.w;
+          float t = fract(position.y + uTime * (isNear > 0.5 ? 0.24 : 0.16) * aSeed.y);
 
-          // Gentle 3D snowflake flutter + wind drift
+          // Swirling 3D turbulent snowflake flutter!
           vec2 flutter = vec2(
-            sin(uTime * 1.6 + aSeed.x * 45.0 + t * 7.0),
-            cos(uTime * 1.4 + aSeed.y * 39.0 + t * 6.5)
-          ) * 0.18;
-          vec2 drift = uWindDir * t * (0.28 + 0.14 * uWindSpeed);
+            sin(uTime * 1.9 + aSeed.x * 52.0 + t * 8.0) + 0.5 * cos(uTime * 3.1 + aSeed.y * 27.0),
+            cos(uTime * 1.7 + aSeed.y * 44.0 + t * 7.5) + 0.5 * sin(uTime * 2.8 + aSeed.x * 31.0)
+          ) * (isNear > 0.5 ? 0.11 : 0.22);
 
-          vec3 p = vec3(
-            mod(position.x + drift.x + flutter.x + 5.5, 11.0) - 5.5,
-            y,
-            mod(position.z + drift.y + flutter.y + 5.5, 11.0) - 5.5
-          );
+          vec3 p;
+          if (isNear > 0.5) {
+            float boxW = 4.8;
+            float boxH = 3.0;
+            vec2 drift = uWindDir * uTime * (0.18 + 0.07 * uWindSpeed);
+            float wx = mod(position.x + drift.x - uCamFocus.x + boxW * 0.5, boxW) - boxW * 0.5 + uCamFocus.x + flutter.x;
+            float wz = mod(position.z + drift.y - uCamFocus.z + boxW * 0.5, boxW) - boxW * 0.5 + uCamFocus.z + flutter.y;
+            float wy = uCamFocus.y + (0.58 - t) * boxH;
+            p = vec3(wx, wy, wz);
+          } else {
+            float topY = 3.9 + max(0.0, (uExag - 1.3) * 1.5);
+            float wy = mix(topY, 0.05, t);
+            vec2 drift = uWindDir * t * (0.45 + 0.15 * uWindSpeed);
+            float wx = mod(position.x + drift.x + flutter.x + 5.5, 11.0) - 5.5;
+            float wz = mod(position.z + drift.y + flutter.y + 5.5, 11.0) - 5.5;
+            p = vec3(wx, wy, wz);
+          }
 
-          // Snow ONLY exists above the live Jennings rain-snow line!
-          float surfElevM = uZMinM + aSeed.w * 1000.0;
-          float snowZone = smoothstep(uRainSnowM - 100.0, uRainSnowM + 100.0, surfElevM);
-          float fade = smoothstep(0.0, 0.14, t) * (1.0 - smoothstep(0.88, 1.0, t));
-          vAlpha = active * snowZone * fade * clamp(uIntensity * 0.85, 0.0, 0.82);
+          // Snow ONLY exists above the live Jennings rain-snow elevation!
+          float ptElevM = uZMinM + (p.y / max(uExag, 0.1)) * 1000.0;
+          float snowZone = smoothstep(uRainSnowM - 120.0, uRainSnowM + 110.0, ptElevM);
+          float inBlock = step(abs(p.x), 5.8) * step(abs(p.z), 5.8);
+          float camDist = length(p - cameraPosition);
+          float distFade = isNear > 0.5
+            ? smoothstep(0.18, 0.65, camDist) * (1.0 - smoothstep(2.8, 4.2, camDist))
+            : smoothstep(1.5, 4.0, camDist);
+
+          float fadeV = smoothstep(0.0, 0.12, t) * (1.0 - smoothstep(0.88, 1.0, t));
+          vAlpha = active * inBlock * snowZone * distFade * fadeV * clamp(uIntensity * 1.05, 0.0, 0.95);
 
           vec4 mv = modelViewMatrix * vec4(p, 1.0);
           gl_Position = projectionMatrix * mv;
-          float pt = 3.6 * aSeed.z * uPixelRatio * (13.0 / max(-mv.z, 1.5));
-          gl_PointSize = clamp(pt, 1.4, 7.5) * step(0.01, vAlpha);
+          float baseSz = (isNear > 0.5 ? 6.8 : 6.2) * aSeed.z * uPixelRatio;
+          gl_PointSize = clamp(baseSz * (13.0 / max(-mv.z, 0.65)), 2.8, 22.0) * step(0.01, vAlpha);
         }
       `,
       fragmentShader: `
         precision mediump float;
+        uniform sampler2D uFlakeTex;
+        uniform float uSunPower;
         varying float vAlpha;
         void main() {
-          float d = length(gl_PointCoord - 0.5);
-          if (d > 0.5 || vAlpha < 0.01) discard;
-          float soft = pow(1.0 - smoothstep(0.05, 0.5, d), 1.4);
-          gl_FragColor = vec4(0.92, 0.96, 1.0, soft * vAlpha);
+          if (vAlpha < 0.01) discard;
+          vec4 tex = texture2D(uFlakeTex, gl_PointCoord);
+          if (tex.a < 0.02) discard;
+          vec3 col = mix(vec3(0.64, 0.73, 0.85), vec3(0.96, 0.98, 1.0), 0.35 + 0.65 * uSunPower);
+          gl_FragColor = vec4(col, tex.a * vAlpha);
         }
       `,
     });
@@ -945,11 +1121,14 @@ export class GlacierScene {
   }
 
   _initCameraPresets() {
+    // Exact Athabasca Glacier tongue AWS immersion height (~2,180 m -> ~0.31 km above 1,867 m min)
+    const awsY0 = this._sampleDemXZ(1.15, -1.45);
     this.presets = {
-      block:   { pos: new THREE.Vector3(9.4, 8.5, -10.3),  target: new THREE.Vector3(0.0, 0.55, 0.15) },
-      flyover: { pos: new THREE.Vector3(3.6, 2.35, -5.2),  target: new THREE.Vector3(-0.6, 1.05, 0.8) },
-      plateau: { pos: new THREE.Vector3(-8.2, 7.6, 8.8),   target: new THREE.Vector3(-0.6, 1.05, 0.2) },
-      top:     { pos: new THREE.Vector3(0.05, 17.5, -0.8), target: new THREE.Vector3(0.0, 0.4, 0.0) },
+      block:     { pos: new THREE.Vector3(9.4, 8.5, -10.3),  target: new THREE.Vector3(0.0, 0.55, 0.15),  fov: 38 },
+      onglacier: { pos: new THREE.Vector3(1.15, awsY0 * 1.3 + 0.22, -1.45), target: new THREE.Vector3(-1.35, awsY0 * 1.3 + 0.72, 1.25), fov: 50 },
+      flyover:   { pos: new THREE.Vector3(3.6, 2.35, -5.2),  target: new THREE.Vector3(-0.6, 1.05, 0.8),  fov: 44 },
+      plateau:   { pos: new THREE.Vector3(-8.2, 7.6, 8.8),   target: new THREE.Vector3(-0.6, 1.05, 0.2),  fov: 38 },
+      top:       { pos: new THREE.Vector3(0.05, 17.5, -0.8), target: new THREE.Vector3(0.0, 0.4, 0.0),    fov: 38 },
     };
   }
 
@@ -969,52 +1148,30 @@ export class GlacierScene {
     sp.needsUpdate = true;
 
     this.smokeSharedUniforms.uExag.value = exag;
+    this.rainCurtainUniforms.uExag.value = exag;
     this.rainUniforms.uExag.value = exag;
     this.snowUniforms.uExag.value = exag;
-    this.cloudMesh.position.y = 4.35 + Math.max(0, (exag - 1.3) * 1.4);
+    this.cloudMesh.position.y = 4.4 + Math.max(0, (exag - 1.3) * 1.4);
+
+    // Keep on-glacier camera preset height synced with new relief exaggeration
+    const awsY0 = this._sampleDemXZ(1.15, -1.45);
+    this.presets.onglacier.pos.y = awsY0 * exag + 0.22;
+    this.presets.onglacier.target.y = awsY0 * exag + 0.72;
   }
 
-  setMode(mode) {
-    this.state.mode = mode;
-    this.terrainUniforms.uMode.value = mode;
+  setMode(mode) { this.state.mode = mode; this.terrainUniforms.uMode.value = mode; }
+  setContours(on) { this.state.contours = on; this.terrainUniforms.uContours.value = on ? 1.0 : 0.0; }
+  setShowSmoke(on) { this.state.showSmoke = on; this.smokeGroup.visible = on; }
+  setShowPrecip(on) {
+    this.state.showPrecip = on;
+    this.rainCurtainGroup.visible = on;
+    this.rainLines.visible = on;
+    this.snowPoints.visible = on;
   }
-
-  setContours(enabled) {
-    this.state.contours = enabled;
-    this.terrainUniforms.uContours.value = enabled ? 1.0 : 0.0;
-  }
-
-  setShowSmoke(enabled) {
-    this.state.showSmoke = enabled;
-    this.smokeGroup.visible = enabled;
-  }
-
-  setShowPrecip(enabled) {
-    this.state.showPrecip = enabled;
-    this.rainLines.visible = enabled;
-    this.snowPoints.visible = enabled;
-  }
-
-  setShowIsotherm(enabled) {
-    this.state.showIsotherm = enabled;
-    this.terrainUniforms.uShowIsotherm.value = enabled ? 1.0 : 0.0;
-  }
-
-  setShadows(enabled) {
-    this.state.shadows = enabled;
-    this.sunLight.castShadow = enabled;
-    this.renderer.shadowMap.enabled = enabled;
-  }
-
-  setBoost(boost) {
-    this.state.boost = boost;
-    this.terrainUniforms.uDepBoost.value = boost;
-  }
-
-  setCompareClean(clean) {
-    this.state.compareClean = clean;
-    this._syncSurfaceUniforms();
-  }
+  setShowIsotherm(on) { this.state.showIsotherm = on; this.terrainUniforms.uShowIsotherm.value = on ? 1.0 : 0.0; }
+  setShadows(on) { this.state.shadows = on; this.sunLight.castShadow = on; this.renderer.shadowMap.enabled = on; }
+  setBoost(boost) { this.state.boost = boost; this.terrainUniforms.uDepBoost.value = boost; }
+  setCompareClean(clean) { this.state.compareClean = clean; this._syncSurfaceUniforms(); }
 
   setMeteorology({
     hour,
@@ -1023,13 +1180,13 @@ export class GlacierScene {
     cloudCover,
     precipMmH,
     rainSnowM,
-    snowCumMm,
+    snowPackMm,
     windSpeed,
     windBearingDeg,
     swIn,
     lwIn,
     wetFrac,
-    dailyDepMgM2,
+    totalDepMgM2,
   }) {
     this.state.hour = hour;
     this.state.depProgress = depCumFrac;
@@ -1037,17 +1194,16 @@ export class GlacierScene {
     this.state.cloudCover = cloudCover;
     this.state.precipMmH = precipMmH;
     this.state.rainSnowM = rainSnowM;
-    this.state.snowCumMm = snowCumMm;
+    this.state.snowPackMm = snowPackMm;
     this.state.windSpeed = windSpeed;
     this.state.windBearingDeg = windBearingDeg;
     this.state.swIn = swIn;
     this.state.lwIn = lwIn;
     this.state.wetFrac = wetFrac;
-    this.state.dailyDepMgM2 = dailyDepMgM2;
+    this.state.totalDepMgM2 = totalDepMgM2;
 
     const towardRad = ((windBearingDeg + 180) * Math.PI) / 180;
-    const wx = Math.sin(towardRad);
-    const wz = -Math.cos(towardRad);
+    const wx = Math.sin(towardRad), wz = -Math.cos(towardRad);
 
     this.terrainUniforms.uWindDir.value.set(wx, wz);
     this.smokeSharedUniforms.uWindDir.value.set(wx, wz);
@@ -1055,13 +1211,13 @@ export class GlacierScene {
     this.rainUniforms.uWindDir.value.set(wx, wz);
     this.snowUniforms.uWindDir.value.set(wx, wz);
 
-    // Volumetric smoke & high LWin cloud canopy
     this.smokeSharedUniforms.uDensity.value = plumeDensity;
     this.smokeSharedUniforms.uWetFrac.value = wetFrac;
     this.cloudUniforms.uCloudCover.value = cloudCover;
 
-    // 3D Rain streaks (below rainSnowM) & Snow flurries (above rainSnowM)
-    const pNorm = Math.min(1.5, precipMmH / 2.2);
+    const pNorm = Math.min(1.5, precipMmH / 2.0);
+    this.rainCurtainUniforms.uIntensity.value = pNorm;
+    this.rainCurtainUniforms.uRainSnowM.value = rainSnowM;
     this.rainUniforms.uIntensity.value = pNorm;
     this.rainUniforms.uWindSpeed.value = windSpeed;
     this.rainUniforms.uRainSnowM.value = rainSnowM;
@@ -1077,76 +1233,89 @@ export class GlacierScene {
   _syncSurfaceUniforms() {
     this.terrainUniforms.uDepCumFrac.value = this.state.compareClean ? 0.0 : this.state.depProgress;
     this.terrainUniforms.uRainSnowM.value = this.state.rainSnowM;
-    this.terrainUniforms.uSnowCumMm.value = this.state.compareClean ? 0.0 : this.state.snowCumMm;
-    this.terrainUniforms.uRainIntensity.value = Math.min(1.5, this.state.precipMmH / 2.2);
+    this.terrainUniforms.uSnowPackMm.value = this.state.compareClean ? 0.0 : this.state.snowPackMm;
+    this.terrainUniforms.uRainIntensity.value = Math.min(1.5, this.state.precipMmH / 2.0);
   }
 
   _updateSolarAndAtmosphere() {
-    // True August solar arc at 52.2 deg N (sunrise ~06:30, solar noon ~13:30, sunset ~20:30)
+    // True August solar trajectory at 52.2 deg N (sunrise ~06:25, solar noon ~13:30, sunset ~20:35)
     const h = this.state.hour;
-    const dayPhase = Math.max(-1, Math.min(1, (h - 13.5) / 7.2));
-    const azDeg = 180 + dayPhase * 106;
-    const rawEl = Math.cos(dayPhase * Math.PI * 0.5) * 47.0;
-    const elDeg = Math.max(10.0, rawEl);
+    const dayPhase = Math.max(-1.15, Math.min(1.15, (h - 13.5) / 7.1));
+    const azDeg = 180 + dayPhase * 110;
+    const rawEl = Math.cos(Math.max(-1, Math.min(1, dayPhase)) * Math.PI * 0.5) * 47.0 - (Math.abs(dayPhase) > 1 ? 8 : 0);
+    const lightEl = Math.max(9.0, rawEl);
 
     const azR = (azDeg * Math.PI) / 180;
-    const elR = (elDeg * Math.PI) / 180;
-    const dist = 22.0;
-    const sx = dist * Math.cos(elR) * Math.sin(azR);
-    const sy = dist * Math.sin(elR);
-    const sz = -dist * Math.cos(elR) * Math.cos(azR);
-    this.sunLight.position.set(sx, sy, sz);
-    this._sunDir.set(sx, sy, sz).normalize();
-    this.smokeSharedUniforms.uSunDir.value.copy(this._sunDir);
+    const skyElR = (Math.max(-6, rawEl) * Math.PI) / 180;
+    const lightElR = (lightEl * Math.PI) / 180;
 
-    // Real solar forcing factor directly from hourly SWin (0..780 W m-2)!
+    // Sky sun direction (can dip below horizon cleanly for sunrise/sunset twilight!)
+    this._sunDir.set(
+      Math.cos(skyElR) * Math.sin(azR),
+      Math.sin(skyElR),
+      -Math.cos(skyElR) * Math.cos(azR)
+    ).normalize();
+
+    const dist = 22.0;
+    this.sunLight.position.set(
+      dist * Math.cos(lightElR) * Math.sin(azR),
+      dist * Math.sin(lightElR),
+      -dist * Math.cos(lightElR) * Math.cos(azR)
+    );
+    this.smokeSharedUniforms.uSunDir.value.copy(this._sunDir);
+    this.skyUniforms.uSunDir.value.copy(this._sunDir);
+
     const swNorm = Math.max(0.0, Math.min(1.0, this.state.swIn / 760.0));
-    const isDay = h >= 6.2 && h <= 21.2 && this.state.swIn > 3.0;
+    const dayFactor = Math.max(0.0, Math.min(1.0, (rawEl + 5.0) / 14.0));
+    const twilight = Math.max(0.0, 1.0 - Math.abs(rawEl - 3.0) / 10.0) * dayFactor;
     const smoke = this.state.showSmoke ? this.state.plumeDensity : 0.0;
     const cloud = this.state.cloudCover;
 
-    // Visible solar disc scales cleanly with SWin & dims red-orange behind smoke
-    this.sunSprite.position.copy(this._sunDir).multiplyScalar(38.0);
-    this.sunSprite.visible = isDay && rawEl > 2.0;
-    const sunDiscColor = new THREE.Color(0xfff7e6).lerp(new THREE.Color(0xff7d2b), Math.min(1, smoke * 0.92));
-    this.sunMat.color.copy(sunDiscColor);
-    this.sunMat.opacity = Math.max(0.15, Math.min(0.95, (0.28 + 0.72 * swNorm) * (1.0 - cloud * 0.45)));
-    const discScale = 3.8 + 4.2 * swNorm;
-    this.sunSprite.scale.set(discScale, discScale, 1);
+    this.skyUniforms.uDaylight.value = dayFactor;
+    this.skyUniforms.uTwilight.value = twilight;
+    this.skyUniforms.uSmoke.value = smoke;
+    this.skyUniforms.uCloud.value = cloud;
+    this.skyUniforms.uSwNorm.value = swNorm;
 
-    // Direct sun intensity & shadow contrast scale directly with real SWin!
     const clearSun = new THREE.Color(0xfff3e0);
-    const smokySun = new THREE.Color(0xff9c42);
+    const twilightSun = new THREE.Color(0xff9b54);
+    const smokySun = new THREE.Color(0xff963c);
     const overcastSun = new THREE.Color(0xc5d6ea);
-    const moonCol = new THREE.Color(0x6c9bd2);
+    const moonCol = new THREE.Color(0x6d9cd4);
 
-    const sunCol = clearSun.clone().lerp(overcastSun, cloud * 0.45).lerp(smokySun, smoke * 0.65);
-    if (!isDay) sunCol.copy(moonCol);
+    const sunCol = clearSun.clone()
+      .lerp(overcastSun, cloud * 0.45)
+      .lerp(twilightSun, twilight * 0.72)
+      .lerp(smokySun, smoke * 0.62)
+      .lerp(moonCol, 1.0 - dayFactor);
+
     this.sunLight.color.copy(sunCol);
-    this.sunLight.intensity = isDay ? (0.65 + 2.35 * Math.pow(swNorm, 0.72)) : 0.78;
+    const dayInt = 0.62 + 2.45 * Math.pow(Math.max(swNorm, dayFactor * 0.14), 0.72);
+    this.sunLight.intensity = dayFactor > 0.05 ? dayInt : 0.72;
 
-    // Hemisphere diffuse sky reflects SWin + LWin overcast + smoke amber scatter
     const clearSky = new THREE.Color(0x7fc0ff);
     const overcastSky = new THREE.Color(0x8899ad);
     const smokeSky = new THREE.Color(0xb48458);
-    const skyCol = clearSky.clone().lerp(overcastSky, cloud * 0.55).lerp(smokeSky, smoke * 0.52);
+    const skyCol = clearSky.clone().lerp(overcastSky, cloud * 0.58).lerp(smokeSky, smoke * 0.50);
     this.hemiLight.color.copy(skyCol);
-    this.hemiLight.intensity = isDay ? (0.48 + 0.42 * Math.sqrt(swNorm) + 0.16 * cloud) : 0.34;
+    this.hemiLight.intensity = 0.34 + (0.48 * Math.sqrt(Math.max(swNorm, 0.08)) + 0.18 * cloud) * dayFactor;
 
-    this.smokeSharedUniforms.uSunPower.value = isDay ? (0.25 + 0.75 * swNorm) : 0.08;
-    this.cloudUniforms.uSunPower.value = isDay ? (0.20 + 0.80 * swNorm) : 0.08;
+    const sunPower = dayFactor * (0.25 + 0.75 * swNorm);
+    this.smokeSharedUniforms.uSunPower.value = Math.max(0.08, sunPower);
+    this.cloudUniforms.uSunPower.value = Math.max(0.08, sunPower);
+    this.rainCurtainUniforms.uSunPower.value = Math.max(0.12, sunPower);
+    this.rainUniforms.uSunPower.value = Math.max(0.14, sunPower);
+    this.snowUniforms.uSunPower.value = Math.max(0.18, sunPower);
 
-    // Backdrop & atmospheric fog respond to day/night, clear sky, overcast LWin, and wildfire smoke
-    const nightBg = new THREE.Color(0x070d17);
-    const clearDayBg = new THREE.Color(0x162b46);
-    const overcastBg = new THREE.Color(0x1d2633);
-    const smokyBg = new THREE.Color(0x281c14);
-    const dayBlend = isDay ? Math.min(1, 0.35 + 0.65 * Math.sqrt(swNorm)) : 0.0;
-    const dayTarget = clearDayBg.clone().lerp(overcastBg, cloud * 0.65).lerp(smokyBg, smoke * 0.68);
-    const bg = nightBg.clone().lerp(dayTarget, dayBlend);
-    this.scene.background.copy(bg);
-    this.scene.fog.color.copy(bg);
-    this.scene.fog.density = 0.0085 + smoke * 0.011 + cloud * 0.004;
+    // Distance fog harmonizes seamlessly with sky dome horizon & valley moisture
+    const nightFog = new THREE.Color(0x070e18);
+    const clearFog = new THREE.Color(0x284364);
+    const stormFog = new THREE.Color(0x2d3744);
+    const smokeFog = new THREE.Color(0x3a281d);
+    const dayFog = clearFog.clone().lerp(stormFog, cloud * 0.72).lerp(smokeFog, smoke * 0.68);
+    this.scene.fog.color.copy(nightFog.clone().lerp(dayFog, dayFactor));
+    const rainMist = Math.min(0.018, this.state.precipMmH * 0.0045);
+    this.scene.fog.density = 0.0065 + smoke * 0.010 + cloud * 0.0035 + rainMist;
   }
 
   flyTo(presetName) {
@@ -1154,11 +1323,13 @@ export class GlacierScene {
     if (!p) return;
     this._camAnim = {
       t: 0,
-      dur: 0.72,
+      dur: 0.85,
       fromPos: this.camera.position.clone(),
       toPos: p.pos.clone(),
       fromTarget: this.controls.target.clone(),
       toTarget: p.target.clone(),
+      fromFov: this.camera.fov,
+      toFov: p.fov || 38,
     };
   }
 
@@ -1172,11 +1343,7 @@ export class GlacierScene {
     const v = new THREE.Vector3(lm.x, lm.y0 * this.state.exag + 0.05, lm.z);
     v.project(this.camera);
     if (v.z > 1.0 || v.z < -1.0 || v.x < -1.08 || v.x > 1.08 || v.y < -1.08 || v.y > 1.08) return null;
-    return {
-      x: (v.x * 0.5 + 0.5) * this.width,
-      y: (-v.y * 0.5 + 0.5) * this.height,
-      depth: v.z,
-    };
+    return { x: (v.x * 0.5 + 0.5) * this.width, y: (-v.y * 0.5 + 0.5) * this.height, depth: v.z };
   }
 
   resize() {
@@ -1200,18 +1367,29 @@ export class GlacierScene {
       const ease = 1 - Math.pow(1 - s, 3);
       this.camera.position.lerpVectors(this._camAnim.fromPos, this._camAnim.toPos, ease);
       this.controls.target.lerpVectors(this._camAnim.fromTarget, this._camAnim.toTarget, ease);
+      this.camera.fov = this._camAnim.fromFov + (this._camAnim.toFov - this._camAnim.fromFov) * ease;
+      this.camera.updateProjectionMatrix();
       if (s >= 1) this._camAnim = null;
     } else if (this.state.spin) {
       const offset = this.camera.position.clone().sub(this.controls.target);
-      offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), dt * 0.16);
+      offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), dt * 0.15);
       this.camera.position.copy(this.controls.target).add(offset);
     }
 
     this.controls.update();
 
+    // Keep sky dome centered on camera & near-field rain/snow wrapped cleanly right around viewer!
+    this.skyDome.position.copy(this.camera.position);
+    const camDir = new THREE.Vector3();
+    this.camera.getWorldDirection(camDir);
+    const focusPt = this.camera.position.clone().addScaledVector(camDir, Math.min(2.2, this.camera.position.distanceTo(this.controls.target) * 0.55));
+    this.rainUniforms.uCamFocus.value.copy(focusPt);
+    this.snowUniforms.uCamFocus.value.copy(focusPt);
+
     const windRate = 0.55 + 0.16 * this.state.windSpeed;
     this.smokeSharedUniforms.uTime.value += dt * windRate;
     this.cloudUniforms.uTime.value += dt * (0.4 + 0.1 * this.state.windSpeed);
+    this.rainCurtainUniforms.uTime.value += dt;
     this.rainUniforms.uTime.value += dt;
     this.snowUniforms.uTime.value += dt;
 

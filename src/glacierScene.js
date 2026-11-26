@@ -198,24 +198,24 @@ export class GlacierScene {
           float h = clamp(d.y, -0.25, 1.0);
           float horiz = pow(1.0 - max(h, 0.0), 3.2);
 
-          // Night alpine sky
-          vec3 nightZen = vec3(0.015, 0.028, 0.058);
-          vec3 nightHor = vec3(0.045, 0.072, 0.125);
+          // Night alpine sky (truly dark, unmistakable starry midnight!)
+          vec3 nightZen = vec3(0.008, 0.015, 0.036);
+          vec3 nightHor = vec3(0.024, 0.042, 0.082);
           vec3 skyNight = mix(nightZen, nightHor, horiz);
 
-          // Clear high-altitude Rocky Mountain blue sky
-          vec3 clearZen = vec3(0.070, 0.210, 0.445);
-          vec3 clearHor = vec3(0.415, 0.590, 0.775);
+          // Bright unmistakable high-altitude Rocky Mountain daytime sky
+          vec3 clearZen = vec3(0.140, 0.380, 0.740);
+          vec3 clearHor = vec3(0.620, 0.785, 0.945);
           vec3 skyClear = mix(clearZen, clearHor, horiz);
 
-          // Moody overcast storm sky
-          vec3 stormZen = vec3(0.140, 0.185, 0.245);
-          vec3 stormHor = vec3(0.315, 0.365, 0.425);
+          // Bright daylight overcast storm sky (unmistakably daytime, never dark night!)
+          vec3 stormZen = vec3(0.320, 0.390, 0.480);
+          vec3 stormHor = vec3(0.560, 0.620, 0.700);
           vec3 skyStorm = mix(stormZen, stormHor, horiz);
 
-          // Wildfire smoky bronze-amber sky
-          vec3 smokeZen = vec3(0.190, 0.145, 0.115);
-          vec3 smokeHor = vec3(0.470, 0.300, 0.175);
+          // Wildfire smoky warm golden-amber daylight sky
+          vec3 smokeZen = vec3(0.340, 0.255, 0.170);
+          vec3 smokeHor = vec3(0.680, 0.460, 0.250);
           vec3 skySmoke = mix(smokeZen, smokeHor, horiz);
 
           vec3 daySky = mix(skyClear, skyStorm, clamp(uCloud * 0.76, 0.0, 1.0));
@@ -223,8 +223,8 @@ export class GlacierScene {
 
           // Golden / rose alpine sunrise & sunset glow along the sun horizon
           float sunDot = max(dot(d, normalize(uSunDir)), 0.0);
-          vec3 twilightBand = mix(vec3(0.85, 0.36, 0.16), vec3(0.98, 0.68, 0.36), pow(sunDot, 2.0));
-          daySky = mix(daySky, twilightBand, uTwilight * horiz * (0.45 + 0.55 * pow(sunDot, 1.5)) * (1.0 - uCloud * 0.45));
+          vec3 twilightBand = mix(vec3(0.95, 0.46, 0.16), vec3(1.00, 0.80, 0.34), pow(sunDot, 2.0));
+          daySky = mix(daySky, twilightBand, uTwilight * horiz * (0.50 + 0.50 * pow(sunDot, 1.5)) * (1.0 - uCloud * 0.45));
 
           vec3 col = mix(skyNight, daySky, uDaylight);
 
@@ -263,25 +263,25 @@ export class GlacierScene {
             }
           }
 
-          // Subtle below-horizon ground reflection for orbital block view
+          // Subtle below-horizon ground reflection for orbital block view (bright slate in daytime, deep midnight at night)
           if (h < 0.0) {
-            col = mix(col, vec3(0.04, 0.06, 0.095), clamp(-h * 5.0, 0.0, 0.85));
+            vec3 belowCol = mix(vec3(0.02, 0.03, 0.06), vec3(0.24, 0.33, 0.44), uDaylight);
+            col = mix(col, belowCol, clamp(-h * 4.5, 0.0, 0.85));
           }
 
-          // Visible solar disc & Mie scattering corona — clearly reflects live cloud & wildfire smoke masking!
+          // Visible golden-yellow solar disc & warm Mie scattering corona — clearly reflects live cloud & smoke masking!
           if (uDaylight > 0.04 && uSunDir.y > -0.02) {
             float maskKeep = clamp(uSwNorm, 0.04, 1.0);
-            float disc = smoothstep(0.9978, 0.9994, sunDot);
-            float innerHalo = pow(sunDot, 48.0) * 0.95;
-            float wideHalo = pow(sunDot, 9.0) * 0.36;
-            vec3 clearCol = vec3(1.0, 0.96, 0.84);
-            vec3 smokeOrb = vec3(1.0, 0.30, 0.08);
-            vec3 cloudVeil = vec3(0.74, 0.80, 0.88);
-            vec3 sunTint = mix(clearCol, cloudVeil, clamp(uCloud * 0.85, 0.0, 1.0));
-            sunTint = mix(sunTint, smokeOrb, clamp(uSmoke * 0.92 + uTwilight * 0.45, 0.0, 1.0));
-            // Sharp blazing disc when clear, smoky red orb in smoke, diffused pale patch behind heavy clouds
-            float discPower = disc * (2.6 * pow(maskKeep, 0.85) * (1.0 - uCloud * 0.72) + 0.45 * uSmoke * (1.0 - uCloud * 0.65));
-            float haloPower = (innerHalo * (0.25 + 0.95 * maskKeep) + wideHalo * (0.35 + 0.65 * maskKeep));
+            float disc = smoothstep(0.9972, 0.9992, sunDot);
+            float innerHalo = pow(sunDot, 42.0) * 1.05;
+            float wideHalo = pow(sunDot, 8.0) * 0.40;
+            vec3 clearCol = vec3(1.00, 0.86, 0.26);
+            vec3 smokeOrb = vec3(1.00, 0.34, 0.06);
+            vec3 cloudVeil = vec3(0.92, 0.88, 0.72);
+            vec3 sunTint = mix(clearCol, cloudVeil, clamp(uCloud * 0.72, 0.0, 1.0));
+            sunTint = mix(sunTint, smokeOrb, clamp(uSmoke * 0.88 + uTwilight * 0.40, 0.0, 1.0));
+            float discPower = disc * (2.9 * pow(maskKeep, 0.82) * (1.0 - uCloud * 0.68) + 0.45 * uSmoke * (1.0 - uCloud * 0.62));
+            float haloPower = (innerHalo * (0.28 + 0.95 * maskKeep) + wideHalo * (0.35 + 0.65 * maskKeep));
             col += sunTint * (discPower + haloPower) * uDaylight;
           }
 
@@ -415,15 +415,17 @@ export class GlacierScene {
           float corona = exp(-r * mix(3.4, 5.2, uCloud)) * (0.20 + 0.75 * trans);
           float veilRing = (1.0 - smoothstep(0.18, 0.55, abs(r - 0.24))) * (uCloud * 0.25 + uSmoke * 0.22);
 
-          vec3 clearSun = vec3(1.0, 0.96, 0.80);
-          vec3 smokeSun = vec3(1.0, 0.32, 0.08);
-          vec3 cloudSun = vec3(0.72, 0.80, 0.90);
-          vec3 col = mix(clearSun, cloudSun, clamp(uCloud * 0.82, 0.0, 1.0));
-          col = mix(col, smokeSun, clamp(uSmoke * 0.92 + uTwilight * 0.45, 0.0, 1.0));
+          vec3 clearSun = vec3(1.00, 0.84, 0.16);
+          vec3 clearCore = vec3(1.00, 0.94, 0.48);
+          vec3 smokeSun = vec3(1.00, 0.34, 0.06);
+          vec3 cloudSun = vec3(0.90, 0.84, 0.62);
+          vec3 baseCol = mix(clearSun, clearCore, clamp(core, 0.0, 1.0));
+          vec3 col = mix(baseCol, cloudSun, clamp(uCloud * 0.72, 0.0, 1.0));
+          col = mix(col, smokeSun, clamp(uSmoke * 0.88 + uTwilight * 0.40, 0.0, 1.0));
 
           float alpha = clamp((core + corona + veilRing) * uDaylight * uArcVis, 0.0, 1.0);
           if (alpha < 0.005) discard;
-          gl_FragColor = vec4(col * (0.55 + 0.85 * trans), alpha);
+          gl_FragColor = vec4(col * (0.65 + 0.95 * trans), alpha);
         }
       `,
     });
@@ -804,11 +806,11 @@ export class GlacierScene {
     sharedGeo.setIndex(idxArr);
 
     const layers = [
-      { heightAbove: 0.22, follow: 0.85, alpha: 0.30, scale: 2.7, speed: 0.72, seed: 1.3 },
-      { heightAbove: 0.52, follow: 0.70, alpha: 0.29, scale: 2.2, speed: 0.90, seed: 4.1 },
-      { heightAbove: 0.90, follow: 0.52, alpha: 0.26, scale: 1.9, speed: 1.08, seed: 7.9 },
-      { heightAbove: 1.38, follow: 0.30, alpha: 0.22, scale: 1.6, speed: 1.24, seed: 11.4 },
-      { heightAbove: 1.98, follow: 0.12, alpha: 0.19, scale: 1.4, speed: 1.42, seed: 15.8 },
+      { heightAbove: 0.14, follow: 0.90, alpha: 0.31, scale: 2.7, speed: 0.72, seed: 1.3 },
+      { heightAbove: 0.34, follow: 0.78, alpha: 0.30, scale: 2.3, speed: 0.90, seed: 4.1 },
+      { heightAbove: 0.58, follow: 0.62, alpha: 0.27, scale: 2.0, speed: 1.08, seed: 7.9 },
+      { heightAbove: 0.86, follow: 0.42, alpha: 0.22, scale: 1.7, speed: 1.24, seed: 11.4 },
+      { heightAbove: 1.18, follow: 0.22, alpha: 0.18, scale: 1.5, speed: 1.42, seed: 15.8 },
     ];
 
     layers.forEach((cfg) => {
@@ -894,11 +896,12 @@ export class GlacierScene {
             if (alpha < 0.004) discard;
 
             vec3 viewDir = normalize(vWorldPos - cameraPosition);
-            float fwd = pow(max(dot(viewDir, normalize(uSunDir)), 0.0), 4.0) * uSunPower;
-            vec3 baseDark = mix(vec3(0.20, 0.17, 0.15), vec3(0.24, 0.28, 0.33), uWetFrac * 0.72);
-            vec3 baseLit  = mix(vec3(0.72, 0.50, 0.30), vec3(0.58, 0.63, 0.69), uWetFrac * 0.72);
-            vec3 col = mix(baseDark, baseLit, clamp(0.22 + 0.65 * uSunPower + 0.35 * cloud, 0.0, 1.0));
-            col += vec3(0.55, 0.32, 0.12) * fwd * (1.0 - uWetFrac * 0.6);
+            float fwd = pow(max(dot(viewDir, normalize(uSunDir)), 0.0), 3.5) * uSunPower;
+            // Distinct warm burnt-amber / smoky copper palette so wildfire smoke is NEVER confused with white/cool-gray water clouds!
+            vec3 baseDark = vec3(0.30, 0.15, 0.05);
+            vec3 baseLit  = vec3(0.86, 0.48, 0.16);
+            vec3 col = mix(baseDark, baseLit, clamp(0.24 + 0.62 * uSunPower + 0.28 * cloud, 0.0, 1.0));
+            col += vec3(0.68, 0.34, 0.08) * fwd;
             gl_FragColor = vec4(col, alpha);
           }
         `,
@@ -1018,8 +1021,8 @@ export class GlacierScene {
 
           float exagOff = max(0.0, (uExag - 1.3) * 1.35);
           float cy = isMid > 0.5
-            ? (aOrigin.y - uStormIntensity * 0.75 + exagOff)
-            : max(groundY + 0.42, groundY + aOrigin.y - uStormIntensity * 0.28);
+            ? (aOrigin.y + 0.35 - uStormIntensity * 0.65 + exagOff)
+            : max(groundY + 1.15, groundY + aOrigin.y + 0.65 - uStormIntensity * 0.22);
 
           vec3 center = vec3(cxz.x, cy, cxz.y);
           vCenter = center;
@@ -1088,19 +1091,18 @@ export class GlacierScene {
           vec3 rayDir = normalize(vWorldPos - cameraPosition);
           float fwdMie = pow(max(dot(rayDir, normalize(uSunDir)), 0.0), 5.0) * (1.0 - shape * 0.55) * uDaylight;
 
-          // Fair-weather sunlit Rocky Mountain cumulus vs heavy dark-base alpine storm nimbus
-          vec3 fairTop = mix(vec3(0.88, 0.92, 0.97), vec3(1.0, 0.72, 0.45), uTwilight * 0.72);
-          vec3 fairBot = vec3(0.38, 0.45, 0.56);
-          vec3 stormTop = vec3(0.54, 0.60, 0.68);
-          vec3 stormBot = vec3(0.13, 0.17, 0.23);
+          // Keep water clouds crisp white / cool silver-blue-gray — NEVER brown — so clouds & amber wildfire smoke stay 100% distinct!
+          vec3 fairTop = mix(vec3(0.95, 0.97, 1.00), vec3(1.00, 0.84, 0.66), uTwilight * 0.45);
+          vec3 fairBot = vec3(0.48, 0.56, 0.68);
+          vec3 stormTop = vec3(0.72, 0.77, 0.84);
+          vec3 stormBot = vec3(0.24, 0.30, 0.39);
 
-          vec3 topCol = mix(fairTop, stormTop, clamp(uStormIntensity * 0.82, 0.0, 1.0));
-          vec3 botCol = mix(fairBot, stormBot, clamp(uStormIntensity * 0.88, 0.0, 1.0));
-          vec3 dayCol = mix(botCol, topCol, heightShade * (0.35 + 0.65 * uSunPower));
-          dayCol = mix(dayCol, vec3(0.62, 0.44, 0.30), uSmoke * 0.42);
-          dayCol += mix(vec3(0.42, 0.46, 0.52), vec3(0.68, 0.46, 0.24), uTwilight + uSmoke * 0.5) * fwdMie * 0.75;
+          vec3 topCol = mix(fairTop, stormTop, clamp(uStormIntensity * 0.80, 0.0, 1.0));
+          vec3 botCol = mix(fairBot, stormBot, clamp(uStormIntensity * 0.85, 0.0, 1.0));
+          vec3 dayCol = mix(botCol, topCol, heightShade * (0.42 + 0.58 * uSunPower));
+          dayCol += vec3(0.44, 0.50, 0.58) * fwdMie * 0.72;
 
-          vec3 nightCol = mix(vec3(0.05, 0.07, 0.12), vec3(0.12, 0.16, 0.24), heightShade);
+          vec3 nightCol = mix(vec3(0.05, 0.08, 0.14), vec3(0.14, 0.19, 0.28), heightShade);
           vec3 col = mix(nightCol, dayCol, uDaylight);
 
           gl_FragColor = vec4(col, alpha);
@@ -1810,8 +1812,11 @@ export class GlacierScene {
   _initCameraPresets() {
     // Exact Athabasca Glacier tongue AWS immersion height (~2,180 m -> ~0.31 km above 1,867 m min)
     const awsY0 = this._sampleDemXZ(1.15, -1.45);
+    // Exact Skaping Columbia Icefield webcam tripod GPS (52.220252 N, -117.224694 W -> x=+2.55, z=-3.14 km)
+    const webY0 = this._sampleDemXZ(2.55, -3.14);
     this.presets = {
       block:     { pos: new THREE.Vector3(9.4, 8.5, -10.3),  target: new THREE.Vector3(0.0, 0.55, 0.15),  fov: 38 },
+      webcam:    { pos: new THREE.Vector3(2.55, webY0 * 1.3 + 0.14, -3.14), target: new THREE.Vector3(1.15, webY0 * 1.3 + 0.68, 0.95), fov: 46 },
       onglacier: { pos: new THREE.Vector3(1.15, awsY0 * 1.3 + 0.22, -1.45), target: new THREE.Vector3(-1.35, awsY0 * 1.3 + 0.72, 1.25), fov: 50 },
       flyover:   { pos: new THREE.Vector3(3.6, 2.35, -5.2),  target: new THREE.Vector3(-0.6, 1.05, 0.8),  fov: 44 },
       plateau:   { pos: new THREE.Vector3(-8.2, 7.6, 8.8),   target: new THREE.Vector3(-0.6, 1.05, 0.2),  fov: 38 },
@@ -1842,10 +1847,13 @@ export class GlacierScene {
     this.snowUniforms.uExag.value = exag;
     this._syncCloudCeiling();
 
-    // Keep on-glacier camera preset height synced with new relief exaggeration
+    // Keep on-glacier & webcam camera preset heights synced with new relief exaggeration
     const awsY0 = this._sampleDemXZ(1.15, -1.45);
     this.presets.onglacier.pos.y = awsY0 * exag + 0.22;
     this.presets.onglacier.target.y = awsY0 * exag + 0.72;
+    const webY0 = this._sampleDemXZ(2.55, -3.14);
+    this.presets.webcam.pos.y = webY0 * exag + 0.14;
+    this.presets.webcam.target.y = webY0 * exag + 0.68;
   }
 
   _syncCloudCeiling() {
@@ -2030,30 +2038,41 @@ export class GlacierScene {
     this.sunOrbUniforms.uTwilight.value = twilight;
     this.sunArcMat.opacity = 0.08 + 0.18 * dayFactor * trans;
 
-    const clearSun = new THREE.Color(0xfff3e0);
-    const twilightSun = new THREE.Color(0xff9b54);
-    const smokySun = new THREE.Color(0xff963c);
-    const overcastSun = new THREE.Color(0xc5d6ea);
-    const moonCol = new THREE.Color(0x6d9cd4);
+    // Warm golden daytime sunlight vs unmistakable cool indigo moonlit night!
+    const clearSun = new THREE.Color(0xffe08a);
+    const twilightSun = new THREE.Color(0xff9438);
+    const smokySun = new THREE.Color(0xff8c2e);
+    const overcastSun = new THREE.Color(0xe6dcc8);
+    const moonCol = new THREE.Color(0x527ec4);
 
     const sunCol = clearSun.clone()
-      .lerp(overcastSun, cloud * 0.45)
+      .lerp(overcastSun, cloud * 0.48)
       .lerp(twilightSun, twilight * 0.72)
-      .lerp(smokySun, smoke * 0.62)
+      .lerp(smokySun, smoke * 0.58)
       .lerp(moonCol, 1.0 - dayFactor);
 
     this.sunLight.color.copy(sunCol);
-    const dayInt = 0.62 + 2.45 * Math.pow(Math.max(swNorm, dayFactor * 0.14), 0.72);
-    this.sunLight.intensity = dayFactor > 0.05 ? dayInt : 0.72;
+    // Strong warm daylight even under clouds (1.7..3.5) vs genuinely dim moonlit night (0.34)
+    const dayInt = 1.45 + 2.15 * Math.pow(Math.max(swNorm, dayFactor * 0.24), 0.65);
+    this.sunLight.intensity = 0.34 + (dayInt - 0.34) * dayFactor;
 
-    const clearSky = new THREE.Color(0x7fc0ff);
-    const overcastSky = new THREE.Color(0x8899ad);
-    const smokeSky = new THREE.Color(0xb48458);
-    const skyCol = clearSky.clone().lerp(overcastSky, cloud * 0.58).lerp(smokeSky, smoke * 0.50);
-    this.hemiLight.color.copy(skyCol);
-    this.hemiLight.intensity = 0.34 + (0.48 * Math.sqrt(Math.max(swNorm, 0.08)) + 0.18 * cloud) * dayFactor;
+    const clearSky = new THREE.Color(0xa6d8ff);
+    const overcastSky = new THREE.Color(0xc8d4e2);
+    const smokeSky = new THREE.Color(0xd9a66c);
+    const nightSky = new THREE.Color(0x1e355e);
+    const dayHemiSky = clearSky.clone().lerp(overcastSky, cloud * 0.58).lerp(smokeSky, smoke * 0.48);
+    this.hemiLight.color.copy(nightSky.clone().lerp(dayHemiSky, dayFactor));
 
-    const sunPower = dayFactor * (0.25 + 0.75 * swNorm);
+    const dayGround = new THREE.Color(0x6b5842).lerp(new THREE.Color(0x4b535e), cloud * 0.5);
+    const nightGround = new THREE.Color(0x0b1220);
+    this.hemiLight.groundColor.copy(nightGround.clone().lerp(dayGround, dayFactor));
+    this.hemiLight.intensity = 0.16 + (0.68 + 0.36 * Math.sqrt(Math.max(swNorm, 0.15)) + 0.16 * cloud) * dayFactor;
+
+    // Gentle exposure boost in daylight & cool dim night
+    this.renderer.toneMappingExposure = 0.84 + 0.32 * dayFactor;
+    this.floorMesh.material.color.copy(new THREE.Color(0x060b14).lerp(new THREE.Color(0x27364a), dayFactor));
+
+    const sunPower = dayFactor * (0.38 + 0.62 * swNorm);
     this.smokeSharedUniforms.uSunPower.value = Math.max(0.08, sunPower);
     this.cloudUniforms.uSunPower.value = Math.max(0.08, sunPower);
     this.virgaUniforms.uSunPower.value = Math.max(0.12, sunPower);
@@ -2061,15 +2080,15 @@ export class GlacierScene {
     this.rainUniforms.uSunPower.value = Math.max(0.14, sunPower);
     this.snowUniforms.uSunPower.value = Math.max(0.18, sunPower);
 
-    // Distance fog harmonizes seamlessly with sky dome horizon & valley moisture
-    const nightFog = new THREE.Color(0x070e18);
-    const clearFog = new THREE.Color(0x284364);
-    const stormFog = new THREE.Color(0x2d3744);
-    const smokeFog = new THREE.Color(0x3a281d);
+    // Distance fog harmonizes seamlessly with bright alpine daylight sky vs dark night
+    const nightFog = new THREE.Color(0x050a14);
+    const clearFog = new THREE.Color(0x5e82a8);
+    const stormFog = new THREE.Color(0x687687);
+    const smokeFog = new THREE.Color(0x7c5838);
     const dayFog = clearFog.clone().lerp(stormFog, cloud * 0.72).lerp(smokeFog, smoke * 0.68);
     this.scene.fog.color.copy(nightFog.clone().lerp(dayFog, dayFactor));
-    const rainMist = Math.min(0.018, this.state.precipMmH * 0.0045);
-    this.scene.fog.density = 0.0065 + smoke * 0.010 + cloud * 0.0035 + rainMist;
+    const rainMist = Math.min(0.016, this.state.precipMmH * 0.0042);
+    this.scene.fog.density = 0.0055 + smoke * 0.0095 + cloud * 0.0032 + rainMist;
   }
 
   flyTo(presetName) {

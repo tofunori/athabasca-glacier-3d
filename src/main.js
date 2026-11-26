@@ -2,7 +2,7 @@ import "./style.css";
 import * as THREE from "three";
 import { GlacierScene } from "./glacierScene.js";
 
-const DATA_VER = "v8_snow_landscape_20261125";
+const DATA_VER = "v9_webcam_sun_clouds_20261125";
 const loader = document.getElementById("loader");
 const loaderSub = document.getElementById("loaderSub");
 const canvas = document.getElementById("sceneCanvas");
@@ -329,6 +329,140 @@ async function boot() {
     const modalProvenance = document.getElementById("modalProvenance");
     const liveTag = document.getElementById("liveTag");
 
+    // Synchronized Skaping Columbia Icefield Webcam PiP & Lightbox
+    const webcamCard = document.getElementById("webcamCard");
+    const btnWebcamToggle = document.getElementById("btnWebcamToggle");
+    const btnWebcamClose = document.getElementById("btnWebcamClose");
+    const btnWebcamZoom = document.getElementById("btnWebcamZoom");
+    const btnMatchCam = document.getElementById("btnMatchCam");
+    const webcamMedia = document.getElementById("webcamMedia");
+    const webcamImg = document.getElementById("webcamImg");
+    const webcamOverlay = document.getElementById("webcamOverlay");
+    const webcamStamp = document.getElementById("webcamStamp");
+    const webcamLink = document.getElementById("webcamLink");
+    const webcamModal = document.getElementById("webcamModal");
+    const webcamModalImg = document.getElementById("webcamModalImg");
+    const webcamModalTitle = document.getElementById("webcamModalTitle");
+    const webcamModalLink = document.getElementById("webcamModalLink");
+    const skapingBase = meta.skapingBase || "https://skaping.s3.gra.io.cloud.ovh.net/pursuit/columbia_icefield";
+
+    let webcamVisible = true;
+    let lastCamKey = "";
+    let currentCamLargeUrl = "";
+    let currentCamSkapingUrl = "https://www.skaping.com/columbiaicefield";
+    const camPreloadCache = new Map();
+
+    function buildSkapingUrl(compactRel, sizeDir = "small") {
+      if (!compactRel) return "";
+      const slash = compactRel.lastIndexOf("/");
+      if (slash < 0) return "";
+      return `${skapingBase}/${compactRel.slice(0, slash)}/${sizeDir}/${compactRel.slice(slash + 1)}`;
+    }
+
+    function skapingArchiveDeepLink(unixTs) {
+      if (!unixTs) return "https://www.skaping.com/columbiaicefield";
+      const b64 = btoa(String(unixTs)).replace(/=+$/, "");
+      return `https://www.skaping.com/columbiaicefield?archives=${b64}`;
+    }
+
+    function preloadWebcamUrl(url) {
+      if (!url || camPreloadCache.has(url)) return;
+      if (camPreloadCache.size > 48) {
+        const firstKey = camPreloadCache.keys().next().value;
+        camPreloadCache.delete(firstKey);
+      }
+      const im = new Image();
+      im.src = url;
+      camPreloadCache.set(url, im);
+    }
+
+    function updateWebcamForHour(ep, tFloat) {
+      if (!webcamVisible) return;
+      const idx = Math.max(0, Math.min(ep.hours.length - 1, Math.round(tFloat)));
+      const key = `${ep.id}:${idx}`;
+      if (key === lastCamKey) return;
+      lastCamKey = key;
+
+      const row = ep.hours[idx];
+      if (ep.isLive) {
+        webcamStamp.textContent = "En direct";
+        webcamImg.classList.add("dimmed");
+        webcamOverlay.textContent = "Caméra Columbia Icefield en hibernation hivernale (archives 2019–2024 disponibles sur les autres séquences).";
+        webcamOverlay.classList.remove("hidden");
+        webcamLink.href = "https://www.skaping.com/columbiaicefield";
+        currentCamLargeUrl = "";
+        return;
+      }
+      if (!ep.hasWebcam) {
+        webcamStamp.textContent = row.dayLabel;
+        webcamImg.removeAttribute("src");
+        webcamOverlay.textContent = "Archives Skaping disponibles à partir du 18 juin 2019 (août 2018 antérieur à la caméra).";
+        webcamOverlay.classList.remove("hidden");
+        webcamLink.href = "https://www.skaping.com/columbiaicefield";
+        currentCamLargeUrl = "";
+        return;
+      }
+
+      if (row.cam) {
+        const smallUrl = buildSkapingUrl(row.cam, "small");
+        const largeUrl = buildSkapingUrl(row.cam, "large");
+        currentCamLargeUrl = largeUrl;
+        currentCamSkapingUrl = skapingArchiveDeepLink(row.camTs);
+        webcamStamp.textContent = `${row.dayLabel} · ${String(row.h).padStart(2, "0")}:00`;
+        webcamLink.href = currentCamSkapingUrl;
+        webcamImg.classList.remove("dimmed");
+        webcamOverlay.classList.add("hidden");
+
+        // Double-buffered swap so rapid scrubbing never flashes blank!
+        const loaderImg = new Image();
+        loaderImg.onload = () => {
+          if (lastCamKey === key) webcamImg.src = smallUrl;
+        };
+        loaderImg.src = smallUrl;
+
+        // Preload next 2 daytime frames ahead for buttery smooth playback
+        for (let step = 1; step <= 2; step++) {
+          const nxt = ep.hours[idx + step];
+          if (nxt && nxt.cam) preloadWebcamUrl(buildSkapingUrl(nxt.cam, "small"));
+        }
+      } else {
+        webcamStamp.textContent = `${row.dayLabel} · ${String(row.h).padStart(2, "0")}:00 (Nuit)`;
+        webcamImg.classList.add("dimmed");
+        webcamOverlay.textContent = "Nuit en montagne · prochaine image dès 05:00 MDT";
+        webcamOverlay.classList.remove("hidden");
+      }
+    }
+
+    function setWebcamVisible(on) {
+      webcamVisible = on;
+      webcamCard.classList.toggle("hidden", !on);
+      btnWebcamToggle.classList.toggle("active-cam", on);
+      btnWebcamToggle.setAttribute("aria-pressed", on ? "true" : "false");
+      if (on) {
+        lastCamKey = "";
+        updateWebcamForHour(meta.episodes[currentEpId], currentT);
+      }
+    }
+
+    btnWebcamToggle.addEventListener("click", () => setWebcamVisible(!webcamVisible));
+    btnWebcamClose.addEventListener("click", () => setWebcamVisible(false));
+    btnMatchCam.addEventListener("click", () => {
+      document.querySelectorAll(".preset-group .pill-btn").forEach((b) => b.classList.toggle("active", b.dataset.preset === "webcam"));
+      glacier.flyTo("webcam");
+    });
+
+    function openWebcamModal() {
+      if (!currentCamLargeUrl) return;
+      webcamModalImg.src = currentCamLargeUrl;
+      webcamModalTitle.textContent = `Webcam Columbia Icefield — ${webcamStamp.textContent} MDT`;
+      webcamModalLink.href = currentCamSkapingUrl;
+      webcamModal.classList.remove("hidden");
+    }
+    btnWebcamZoom.addEventListener("click", openWebcamModal);
+    webcamMedia.addEventListener("click", openWebcamModal);
+    document.getElementById("btnCloseWebcamModal").addEventListener("click", () => webcamModal.classList.add("hidden"));
+    webcamModal.addEventListener("click", (e) => { if (e.target === webcamModal) webcamModal.classList.add("hidden"); });
+
     const slLabSmoke = document.getElementById("slLabSmoke");
     const slLabSw = document.getElementById("slLabSw");
     const slLabCloud = document.getElementById("slLabCloud");
@@ -419,7 +553,7 @@ async function boot() {
       if (m === 0) {
         legendBody.innerHTML = `
           <div class="legend-title">Atmosphère &amp; manteau neigeux</div>
-          <div>Clique sur <strong>Sur le glacier</strong> pour te placer à la station AWS · <span style="color:#5cc8ff">ligne cyan</span> = isotherme pluie/neige (pluie en bas, neige fraîche en haut).</div>
+          <div><span style="color:#f59e0b">■ Fumée</span> (ambre bas en vallée) · <span style="color:#e2e8f0">■ Nuages</span> (blanc/gris en altitude) · <span style="color:#5cc8ff">— Pluie/neige</span></div>
         `;
       } else if (m === 1) {
         legendBody.innerHTML = `
@@ -585,6 +719,7 @@ async function boot() {
       for (let d = 0; d < dayPillEls.length; d++) {
         dayPillEls[d].classList.toggle("active", d === s.dayIdx);
       }
+      updateWebcamForHour(ep, currentT);
     }
 
     // Play / Pause & speed

@@ -77,11 +77,16 @@
     <nav class="hud-top-right" aria-label="Caméra et météo">
       <div class="preset-group">
         <button class="pill-btn active" data-preset="block">Bloc 3D</button>
+        <button class="pill-btn immersion-pill" data-preset="webcam" title="Placer la caméra 3D exactement à l'emplacement GPS de la webcam Skaping (52,2203° N, 117,2247° O)">Vue Webcam</button>
         <button class="pill-btn immersion-pill" data-preset="onglacier" title="Se placer directement sur la langue du glacier (station AWS)">Sur le glacier</button>
         <button class="pill-btn" data-preset="flyover">Survol</button>
         <button class="pill-btn" data-preset="plateau">Plateau</button>
         <button class="pill-btn" data-preset="top">Carte</button>
       </div>
+
+      <button id="btnWebcamToggle" class="pill-btn accent-outline active-cam" aria-pressed="true" title="Afficher ou masquer la photo réelle de la webcam Columbia Icefield synchronisée à l'heure">
+        Webcam réelle
+      </button>
 
       <button id="btnSettings" class="pill-btn accent-outline" aria-expanded="false">
         Météo &amp; couches
@@ -202,6 +207,46 @@
         <button id="btnSnap" class="pill-btn primary">Capturer PNG</button>
       </div>
     </aside>
+
+    <!-- Synchronized Real Columbia Icefield Skaping Webcam Card (Bottom-Right PiP) -->
+    <aside id="webcamCard" class="webcam-card" aria-label="Webcam réelle Columbia Icefield synchronisée">
+      <div class="webcam-head">
+        <div class="webcam-title-wrap">
+          <span class="webcam-dot"></span>
+          <span class="webcam-title">Webcam réelle</span>
+          <span id="webcamStamp" class="webcam-stamp">—</span>
+        </div>
+        <div class="webcam-actions">
+          <button id="btnWebcamZoom" class="wc-icon-btn" title="Agrandir en HD" aria-label="Agrandir">⤢</button>
+          <a id="webcamLink" class="wc-icon-btn" href="https://www.skaping.com/columbiaicefield" target="_blank" rel="noopener" title="Ouvrir cette archive sur Skaping">↗</a>
+          <button id="btnWebcamClose" class="wc-icon-btn" title="Masquer la webcam" aria-label="Masquer">×</button>
+        </div>
+      </div>
+      <div class="webcam-media" id="webcamMedia">
+        <img id="webcamImg" class="webcam-img" alt="Archive webcam Columbia Icefield synchronisée" loading="eager" />
+        <div id="webcamOverlay" class="webcam-overlay hidden"></div>
+      </div>
+      <div class="webcam-foot">
+        <span>Columbia Icefield · Pursuit / Skaping</span>
+        <button id="btnMatchCam" class="wc-match-btn" title="Aligner la caméra 3D sur le point de vue exact de la webcam">Aligner 3D</button>
+      </div>
+    </aside>
+
+    <!-- HD Webcam Lightbox Modal -->
+    <div id="webcamModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-label="Archive webcam HD">
+      <div class="webcam-modal-card">
+        <div class="modal-head">
+          <h2 id="webcamModalTitle">Webcam Columbia Icefield — Archive HD</h2>
+          <div class="webcam-actions">
+            <a id="webcamModalLink" class="pill-btn accent-outline" href="https://www.skaping.com/columbiaicefield" target="_blank" rel="noopener">Ouvrir sur Skaping ↗</a>
+            <button id="btnCloseWebcamModal" class="icon-btn" aria-label="Fermer">×</button>
+          </div>
+        </div>
+        <div class="webcam-modal-body">
+          <img id="webcamModalImg" alt="Archive HD Columbia Icefield" />
+        </div>
+      </div>
+    </div>
 
     <!-- Bottom Floating Legend -->
     <div id="legendCard" class="legend-card">

@@ -463,6 +463,88 @@ async function boot() {
     document.getElementById("btnCloseWebcamModal").addEventListener("click", () => webcamModal.classList.add("hidden"));
     webcamModal.addEventListener("click", (e) => { if (e.target === webcamModal) webcamModal.classList.add("hidden"); });
 
+    // Smooth drag (header) & resize (bottom-right corner) for the floating Webcam PiP window
+    const webcamDragHandle = document.getElementById("webcamDragHandle");
+    const webcamResizeHandle = document.getElementById("webcamResizeHandle");
+    let dragState = null;
+    let resizeState = null;
+
+    function clampWebcamInViewport() {
+      if (!webcamCard.style.left && !webcamCard.style.top) return;
+      const rect = webcamCard.getBoundingClientRect();
+      const maxX = Math.max(8, window.innerWidth - rect.width - 8);
+      const maxY = Math.max(8, window.innerHeight - rect.height - 8);
+      const curX = parseFloat(webcamCard.style.left) || rect.left;
+      const curY = parseFloat(webcamCard.style.top) || rect.top;
+      webcamCard.style.left = `${Math.max(8, Math.min(maxX, curX))}px`;
+      webcamCard.style.top = `${Math.max(8, Math.min(maxY, curY))}px`;
+    }
+
+    webcamDragHandle.addEventListener("pointerdown", (e) => {
+      if (e.target.closest("button, a")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = webcamCard.getBoundingClientRect();
+      webcamCard.style.left = `${rect.left}px`;
+      webcamCard.style.top = `${rect.top}px`;
+      webcamCard.style.right = "auto";
+      webcamCard.style.bottom = "auto";
+      webcamCard.classList.add("dragging");
+      dragState = { id: e.pointerId, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
+      webcamDragHandle.setPointerCapture(e.pointerId);
+    });
+    webcamDragHandle.addEventListener("pointermove", (e) => {
+      if (!dragState || e.pointerId !== dragState.id) return;
+      const rect = webcamCard.getBoundingClientRect();
+      const nx = Math.max(8, Math.min(window.innerWidth - rect.width - 8, e.clientX - dragState.dx));
+      const ny = Math.max(8, Math.min(window.innerHeight - rect.height - 8, e.clientY - dragState.dy));
+      webcamCard.style.left = `${nx}px`;
+      webcamCard.style.top = `${ny}px`;
+    });
+    const endDrag = (e) => {
+      if (!dragState || e.pointerId !== dragState.id) return;
+      dragState = null;
+      webcamCard.classList.remove("dragging");
+      try { webcamDragHandle.releasePointerCapture(e.pointerId); } catch {}
+    };
+    webcamDragHandle.addEventListener("pointerup", endDrag);
+    webcamDragHandle.addEventListener("pointercancel", endDrag);
+    webcamDragHandle.addEventListener("dblclick", (e) => {
+      if (e.target.closest("button, a")) return;
+      webcamCard.style.left = "";
+      webcamCard.style.top = "";
+      webcamCard.style.right = "";
+      webcamCard.style.bottom = "";
+      webcamCard.style.width = "";
+    });
+
+    webcamResizeHandle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = webcamCard.getBoundingClientRect();
+      webcamCard.style.left = `${rect.left}px`;
+      webcamCard.style.top = `${rect.top}px`;
+      webcamCard.style.right = "auto";
+      webcamCard.style.bottom = "auto";
+      resizeState = { id: e.pointerId, startX: e.clientX, startW: rect.width };
+      webcamResizeHandle.setPointerCapture(e.pointerId);
+    });
+    webcamResizeHandle.addEventListener("pointermove", (e) => {
+      if (!resizeState || e.pointerId !== resizeState.id) return;
+      const maxW = Math.min(720, window.innerWidth - (parseFloat(webcamCard.style.left) || 16) - 12);
+      const nw = Math.max(240, Math.min(maxW, resizeState.startW + (e.clientX - resizeState.startX)));
+      webcamCard.style.width = `${Math.round(nw)}px`;
+      clampWebcamInViewport();
+    });
+    const endResize = (e) => {
+      if (!resizeState || e.pointerId !== resizeState.id) return;
+      resizeState = null;
+      try { webcamResizeHandle.releasePointerCapture(e.pointerId); } catch {}
+    };
+    webcamResizeHandle.addEventListener("pointerup", endResize);
+    webcamResizeHandle.addEventListener("pointercancel", endResize);
+    window.addEventListener("resize", clampWebcamInViewport);
+
     const slLabSmoke = document.getElementById("slLabSmoke");
     const slLabSw = document.getElementById("slLabSw");
     const slLabCloud = document.getElementById("slLabCloud");

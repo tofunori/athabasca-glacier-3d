@@ -132,6 +132,15 @@ html, body, #app {
 .webcam-head {
   display: flex; align-items: center; justify-content: space-between; gap: 6px;
   padding: 7px 10px; border-bottom: 1px solid var(--border);
+  cursor: grab; touch-action: none;
+}
+.webcam-head:active, .webcam-card.dragging .webcam-head { cursor: grabbing; }
+.webcam-card.dragging { border-color: var(--accent); box-shadow: 0 24px 56px rgba(0, 0, 0, 0.65); }
+.webcam-grip { color: rgba(147, 167, 190, 0.55); font-size: 11px; letter-spacing: -1px; margin-right: 1px; }
+.webcam-resize {
+  position: absolute; right: 0; bottom: 0; width: 16px; height: 16px;
+  cursor: nwse-resize; touch-action: none;
+  background: linear-gradient(135deg, transparent 50%, rgba(147, 210, 255, 0.35) 50%, rgba(147, 210, 255, 0.35) 62%, transparent 62%, transparent 74%, rgba(147, 210, 255, 0.5) 74%);
 }
 .webcam-title-wrap { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .webcam-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }

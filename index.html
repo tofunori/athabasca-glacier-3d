@@ -208,10 +208,11 @@
       </div>
     </aside>
 
-    <!-- Synchronized Real Columbia Icefield Skaping Webcam Card (Bottom-Right PiP) -->
+    <!-- Synchronized Real Columbia Icefield Skaping Webcam Card (Draggable & Resizable PiP) -->
     <aside id="webcamCard" class="webcam-card" aria-label="Webcam réelle Columbia Icefield synchronisée">
-      <div class="webcam-head">
+      <div id="webcamDragHandle" class="webcam-head" title="Glisser pour déplacer la fenêtre (double-clic pour réinitialiser)">
         <div class="webcam-title-wrap">
+          <span class="webcam-grip" aria-hidden="true">⋮⋮</span>
           <span class="webcam-dot"></span>
           <span class="webcam-title">Webcam réelle</span>
           <span id="webcamStamp" class="webcam-stamp">—</span>
@@ -230,6 +231,7 @@
         <span>Columbia Icefield · Pursuit / Skaping</span>
         <button id="btnMatchCam" class="wc-match-btn" title="Aligner la caméra 3D sur le point de vue exact de la webcam">Aligner 3D</button>
       </div>
+      <div id="webcamResizeHandle" class="webcam-resize" title="Glisser pour redimensionner"></div>
     </aside>
 
     <!-- HD Webcam Lightbox Modal -->

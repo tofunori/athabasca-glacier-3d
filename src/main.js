@@ -954,7 +954,7 @@ async function boot() {
       labActive = false; btnSyncAws.classList.add("hidden");
       glacier.flyTo("block");
       slExag.value = "1.30"; valExag.textContent = "1,30×"; glacier.setExaggeration(1.30);
-      slBoost.value = "2.2"; valBoost.textContent = "2,2×"; glacier.setBoost(2.2);
+      slBoost.value = "1.4"; valBoost.textContent = "1,4×"; glacier.setBoost(1.4);
       glacier.state.spin = false; document.getElementById("chkSpin").checked = false;
       syncTimeUI();
     });

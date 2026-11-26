@@ -12,7 +12,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
  * - Immersive "Sur le glacier (AWS)" first-person camera right on the ice at 2,180 m!
  */
 export class GlacierScene {
-  constructor(canvas, meta, demU16, rgbTex, maskTex) {
+  constructor(canvas, meta, demU16, rgbTex, maskTex, ringU16 = null) {
     this.canvas = canvas;
     this.meta = meta;
     this.G = meta.grid;
@@ -49,12 +49,14 @@ export class GlacierScene {
       showPrecip: true,
       showIsotherm: true,
       showSunArc: true,
+      showHorizon: false,
       shadows: true,
       spin: false,
       boost: 1.4,
       compareClean: false,
       hour: 13.0,
       depProgress: 0.0,
+      rfWm2: 0.0,
       plumeDensity: 0.4,
       cloudCover: 0.4,
       cloudLow: 0.3,
@@ -79,6 +81,7 @@ export class GlacierScene {
     this._initSkyDomeAndLighting();
     this._buildSolarOrbAndArc();
     this._buildTerrain(rgbTex, maskTex);
+    this._buildSurroundingRockies(ringU16);
     this._buildVolumetricSmoke();
     this._buildCloudDeck();
     this._buildPrecipVolume();
@@ -503,6 +506,11 @@ export class GlacierScene {
       uRainIntensity: { value: 0.0 },
       uSmokeHaze: { value: 0.0 },
       uDaylight: { value: 0.9 },
+      uTime: { value: 0.0 },
+      uSunDir: { value: this._sunDir.clone() },
+      uCloudShadowAmt: { value: 0.3 },
+      uExag: { value: this.state.exag },
+      uRfNorm: { value: 0.0 },
       uZMinM: { value: this.meta.zMinM },
       uZRangeKm: { value: this.zRangeKm },
       uWindDir: { value: new THREE.Vector2(0.85, -0.52) },
@@ -552,6 +560,11 @@ export class GlacierScene {
           uniform float uRainIntensity;
           uniform float uSmokeHaze;
           uniform float uDaylight;
+          uniform float uTime;
+          uniform vec3 uSunDir;
+          uniform float uCloudShadowAmt;
+          uniform float uExag;
+          uniform float uRfNorm;
           uniform float uZMinM;
           uniform float uZRangeKm;
           uniform vec2 uWindDir;
@@ -589,6 +602,18 @@ export class GlacierScene {
             vec3 c2 = vec3(0.480, 0.085, 0.030);
             vec3 c3 = vec3(0.880, 0.360, 0.020);
             vec3 c4 = vec3(0.980, 0.800, 0.260);
+            if (t < 0.25) return mix(c0, c1, t / 0.25);
+            if (t < 0.55) return mix(c1, c2, (t - 0.25) / 0.30);
+            if (t < 0.82) return mix(c2, c3, (t - 0.55) / 0.27);
+            return mix(c3, c4, clamp((t - 0.82) / 0.18, 0.0, 1.0));
+          }
+          vec3 rfHeatmap(float t) {
+            // Magma/Inferno perceptual scientific ramp for instantaneous radiative forcing RF = -dAlpha * SW (0..55 W m-2)
+            vec3 c0 = vec3(0.025, 0.022, 0.085);
+            vec3 c1 = vec3(0.260, 0.035, 0.340);
+            vec3 c2 = vec3(0.760, 0.145, 0.180);
+            vec3 c3 = vec3(0.960, 0.490, 0.055);
+            vec3 c4 = vec3(0.990, 0.940, 0.520);
             if (t < 0.25) return mix(c0, c1, t / 0.25);
             if (t < 0.55) return mix(c1, c2, (t - 0.25) / 0.30);
             if (t < 0.82) return mix(c2, c3, (t - 0.55) / 0.27);
@@ -647,6 +672,15 @@ export class GlacierScene {
           float belowRainLine = 1.0 - smoothstep(uRainSnowM - 90.0, uRainSnowM + 110.0, elevM);
           float wetSurface = clamp(uRainIntensity * 0.62, 0.0, 0.78) * belowRainLine * (1.0 - freshSnow * 0.85);
 
+          // Projected moving 3D cloud shadows gliding across the glacier & cliffs along the true sun vector!
+          float cloudShadow = 1.0;
+          if (uCloudShadowAmt > 0.08 && uDaylight > 0.08) {
+            vec2 shP = vObjPos.xz + uSunDir.xz * ((3.3 - vObjPos.y) / max(uSunDir.y, 0.24));
+            float cn = fbm(shP * 0.26 - uWindDir * uTime * 0.065);
+            float cMask = smoothstep(0.66 - uCloudShadowAmt * 0.42, 0.84, cn);
+            cloudShadow = 1.0 - cMask * uCloudShadowAmt * 0.48 * uDaylight;
+          }
+
           if (uMode < 0.5) {
             diffuseColor.rgb *= microShade;
             diffuseColor.rgb *= mix(vec3(1.0), vec3(0.84, 0.89, 0.95), isSnow * 0.45);
@@ -670,29 +704,39 @@ export class GlacierScene {
             vec3 freshSnowCol = vec3(0.80, 0.86, 0.93) * (0.88 + 0.16 * sastrugi + 0.08 * grain);
             diffuseColor.rgb = mix(diffuseColor.rgb, freshSnowCol, freshSnow * 0.94);
 
-            // Physical Koschmieder aerial-perspective wildfire smoke haze through the valley smoke slab!
-            // Computes true ray path length INSIDE the smoke layer (works identically in Bloc 3D & Vue Webcam!):
-            // close foreground stays sharp while glacier tongue & distant peaks smoothly fade into luminous milky-amber smoke!
-            if (uSmokeHaze > 0.02) {
-              float rayLen = length(vObjPos - cameraPosition);
-              float smokeTopY = 2.55;
-              float camAbove = max(0.0, cameraPosition.y - smokeTopY);
-              float sinEl = max(0.20, abs(cameraPosition.y - vObjPos.y) / max(rayLen, 0.01));
-              float inSmokeKm = max(0.0, rayLen - camAbove / sinEl);
-              float valleyPool = 1.25 - 0.45 * elevT;
-              float extCoeff = 0.06 + 0.34 * pow(uSmokeHaze, 0.85);
-              float optDepth = inSmokeKm * extCoeff * valleyPool;
-              float hazeAmt = clamp((1.0 - exp(-optDepth)) * smoothstep(0.02, 0.22, uSmokeHaze), 0.0, 0.82);
-              vec3 hazeDay = mix(vec3(0.68, 0.65, 0.60), vec3(0.78, 0.58, 0.38), clamp(uSmokeHaze * 0.85, 0.0, 1.0));
-              vec3 hazeNight = vec3(0.06, 0.05, 0.06);
-              diffuseColor.rgb = mix(diffuseColor.rgb, mix(hazeNight, hazeDay, uDaylight), hazeAmt);
+            // Animated proglacial Lac Sunwapta: wind micro-ripples, glacial turquoise depth, Fresnel sky reflection & sun glint!
+            float isLake = smoothstep(0.22, 0.62, water);
+            if (isLake > 0.01) {
+              vec2 wUv1 = vObjPos.xz * 26.0 - uWindDir * uTime * 0.9;
+              vec2 wUv2 = vObjPos.xz * 44.0 + vec2(uWindDir.y, -uWindDir.x) * uTime * 0.65;
+              float rip = (vnoise(wUv1) - 0.5) * 0.6 + (vnoise(wUv2) - 0.5) * 0.4;
+              vec3 viewW = normalize(cameraPosition - vObjPos);
+              vec3 nW = normalize(vec3(rip * 0.24, 1.0, rip * 0.24));
+              float fres = pow(1.0 - max(dot(viewW, nW), 0.0), 3.2);
+              vec3 deepLake = mix(vec3(0.020, 0.055, 0.095), vec3(0.045, 0.240, 0.265), uDaylight);
+              vec3 skyRefl = mix(vec3(0.04, 0.07, 0.14), mix(vec3(0.45, 0.62, 0.82), vec3(0.68, 0.62, 0.54), uSmokeHaze * 0.65), uDaylight);
+              vec3 hVec = normalize(viewW + normalize(uSunDir));
+              float glint = pow(max(dot(nW, hVec), 0.0), 90.0) * uDaylight * (1.0 - uCloudShadowAmt * 0.6) * 0.95;
+              vec3 lakeCol = mix(deepLake, skyRefl, clamp(0.18 + 0.72 * fres, 0.0, 0.88)) + vec3(1.0, 0.92, 0.68) * glint;
+              diffuseColor.rgb = mix(diffuseColor.rgb, lakeCol, isLake);
             }
+
+            // Apply moving cloud shadows across terrain
+            diffuseColor.rgb *= cloudShadow;
           } else if (uMode < 1.5) {
+            // Scientific Mode 1: Instantaneous Surface Radiative Forcing RF = -dAlpha * SWdown (W m-2)
+            float luma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+            float rfLocal = clamp(uRfNorm * (0.62 + 0.58 * localDepNorm) * mix(0.85, 1.32, isIce) * (1.0 - freshSnow * 0.92) * cloudShadow, 0.0, 1.0);
+            vec3 hm = rfHeatmap(rfLocal);
+            vec3 rockBase = diffuseColor.rgb * 0.28 * cloudShadow;
+            diffuseColor.rgb = mix(rockBase, hm * (0.68 + 0.48 * sqrt(max(luma, 0.01))), mix(0.10, 0.95, isCryo));
+          } else if (uMode < 2.5) {
+            // Mode 2: Cumulative FireWork carbon deposition (EC+POM+SOM, mg m-2)
             float luma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
             vec3 hm = depHeatmap(clamp(localDepNorm * 0.95, 0.0, 1.0));
             vec3 rockBase = diffuseColor.rgb * 0.35;
             diffuseColor.rgb = mix(rockBase, hm * (0.65 + 0.55 * sqrt(max(luma, 0.01))), mix(0.28, 0.94, isCryo));
-          } else if (uMode < 2.5) {
+          } else if (uMode < 3.5) {
             vec3 rockCol = mix(vec3(0.030, 0.036, 0.040), vec3(0.160, 0.125, 0.095), clamp(visAlb * 3.0, 0.0, 1.0));
             vec3 iceCol = mix(vec3(0.028, 0.165, 0.440), vec3(0.145, 0.440, 0.760), clamp(visAlb * 1.7, 0.0, 1.0));
             vec3 snowCol = vec3(0.60, 0.67, 0.76) * microShade;
@@ -700,7 +744,7 @@ export class GlacierScene {
             col = mix(col, vec3(0.015, 0.38, 0.42), smoothstep(0.25, 0.65, water));
             diffuseColor.rgb = col;
           } else {
-            diffuseColor.rgb = mix(vec3(0.26, 0.29, 0.34), vec3(0.58, 0.63, 0.70), elevT) * microShade;
+            diffuseColor.rgb = mix(vec3(0.26, 0.29, 0.34), vec3(0.58, 0.63, 0.70), elevT) * microShade * cloudShadow;
           }
 
           if (uContours > 0.5) {
@@ -710,7 +754,7 @@ export class GlacierScene {
             float fw500 = fwidth(elevM / 500.0) * 1.7;
             float l100 = 1.0 - smoothstep(0.0, max(fw100, 0.014), c100);
             float l500 = 1.0 - smoothstep(0.0, max(fw500, 0.010), c500);
-            vec3 lc = uMode > 2.5 ? vec3(0.14, 0.20, 0.28) : vec3(0.05, 0.09, 0.14);
+            vec3 lc = uMode > 3.5 ? vec3(0.14, 0.20, 0.28) : vec3(0.05, 0.09, 0.14);
             diffuseColor.rgb = mix(diffuseColor.rgb, lc, clamp(l100 * 0.34 + l500 * 0.50, 0.0, 0.75));
           }
 
@@ -738,6 +782,52 @@ export class GlacierScene {
           rVal = mix(rVal, 0.85, clamp(uDepCumFrac * 0.32 * isCryoR, 0.0, 0.5));
           rVal = mix(rVal, 0.15, clamp(uRainIntensity * 0.38, 0.0, 0.62) * belowR);
           roughnessFactor = rVal;`
+        )
+        .replace(
+          "#include <tonemapping_fragment>",
+          `// Post-lighting Exact Closed-Form Beer-Lambert Exponential Height-Fog + Henyey-Greenstein Mie Wildfire Smoke!
+          // Applied in linear radiance space BEFORE ACESFilmic tone mapping & sRGB conversion so shadowed cliffs lift into luminous milky-amber smoke (true Koschmieder airlight, exact parity with 35 km Rockies ring!).
+          if (uMode < 0.5 && uSmokeHaze > 0.015) {
+            vec3 rayVec = vObjPos - cameraPosition;
+            float rayLen = length(rayVec);
+            vec3 rayDir = rayVec / max(rayLen, 0.001);
+            float H = 1.05 * uExag;
+            float yTop = 2.65 * uExag;
+            float y0 = max(0.0, cameraPosition.y);
+            float y1 = max(0.0, vObjPos.y);
+            float effLen = rayLen;
+            float ya = y0;
+            if (y0 > yTop && y0 > y1 + 0.001) {
+              float tEnter = clamp((y0 - yTop) / (y0 - y1), 0.0, 1.0);
+              effLen = rayLen * (1.0 - tEnter);
+              ya = yTop;
+            } else if (y0 > yTop && y1 >= yTop) {
+              effLen = 0.0;
+            }
+            float dya = y1 - ya;
+            float avgExp = abs(dya) < 0.025
+              ? exp(-ya / H)
+              : (exp(-ya / H) - exp(-y1 / H)) / (dya / H);
+            float ext = 0.068 + 0.54 * pow(uSmokeHaze, 0.88);
+            float optDepth = max(0.0, effLen * avgExp * ext);
+            float hazeAmt = clamp((1.0 - exp(-optDepth)) * smoothstep(0.015, 0.16, uSmokeHaze), 0.0, 0.88);
+
+            float cosT = dot(rayDir, normalize(uSunDir));
+            float g = 0.58;
+            float hg = (1.0 - g * g) / pow(max(0.25, 1.0 + g * g - 2.0 * g * cosT), 1.5);
+            float sunGlow = clamp((hg - 0.35) * 0.24, 0.0, 0.68);
+
+            // Linear-space airlight colors (calibrated for ACESFilmicToneMapping -> silky milky warm-amber alpine smoke!)
+            vec3 smokeCool = vec3(0.38, 0.37, 0.35);
+            vec3 smokeWarm = vec3(0.68, 0.45, 0.22);
+            vec3 smokeDense = vec3(0.64, 0.30, 0.10);
+            vec3 hazeDay = mix(smokeCool, smokeWarm, clamp(0.26 + 0.55 * sunGlow + 0.36 * uSmokeHaze, 0.0, 1.0));
+            hazeDay = mix(hazeDay, smokeDense, clamp((uSmokeHaze - 0.52) * 0.85, 0.0, 0.55));
+            hazeDay *= (1.0 - uCloudShadowAmt * 0.22);
+            vec3 hazeNight = vec3(0.010, 0.011, 0.016);
+            gl_FragColor.rgb = mix(gl_FragColor.rgb, mix(hazeNight, hazeDay, uDaylight), hazeAmt);
+          }
+          #include <tonemapping_fragment>`
         );
     };
 
@@ -790,6 +880,218 @@ export class GlacierScene {
     this.scene.add(this.skirtMesh);
   }
 
+  _buildSurroundingRockies(ringU16) {
+    // 35 km x 35 km real Copernicus GLO-30 Rocky Mountain horizon seamlessly surrounding the 11x11 km block!
+    // Automatically appears in Vue Webcam, Sur le glacier & Survol (and toggleable in Bloc 3D!) so the horizon NEVER ends abruptly!
+    this.ringMesh = null;
+    this.ringGeo = null;
+    if (!ringU16 || !this.meta.ring) return;
+
+    const G = this.meta.ring.grid;
+    const size = this.meta.ring.sizeKm;
+    const zMinR = this.meta.ring.zMinM;
+    const zMaxR = this.meta.ring.zMaxM;
+    const zSpanR = Math.max(zMaxR - zMinR, 1.0);
+    const baseRefM = this.meta.zMinM;
+
+    const nV = G * G;
+    const pos = new Float32Array(nV * 3);
+    const baseElev = new Float32Array(nV);
+    for (let r = 0; r < G; r++) {
+      const vFrac = r / (G - 1);
+      const z = (vFrac - 0.5) * size;
+      for (let c = 0; c < G; c++) {
+        const uFrac = c / (G - 1);
+        const x = (uFrac - 0.5) * size;
+        const idx = r * G + c;
+        const elevM = zMinR + (ringU16[idx] / 65535.0) * zSpanR;
+        const y0 = (elevM - baseRefM) / 1000.0;
+        baseElev[idx] = y0;
+        pos[idx * 3 + 0] = x;
+        pos[idx * 3 + 1] = y0 * this.state.exag;
+        pos[idx * 3 + 2] = z;
+      }
+    }
+
+    const halfCut = this.sizeX * 0.5 - 0.08;
+    const indices = [];
+    for (let r = 0; r < G - 1; r++) {
+      const z0 = (r / (G - 1) - 0.5) * size;
+      const z1 = ((r + 1) / (G - 1) - 0.5) * size;
+      for (let c = 0; c < G - 1; c++) {
+        const x0 = (c / (G - 1) - 0.5) * size;
+        const x1 = ((c + 1) / (G - 1) - 0.5) * size;
+        // Skip triangles fully inside the 11x11 km high-res block
+        if (Math.abs(x0) < halfCut && Math.abs(x1) < halfCut && Math.abs(z0) < halfCut && Math.abs(z1) < halfCut) continue;
+        const i00 = r * G + c, i01 = i00 + 1, i10 = i00 + G, i11 = i10 + 1;
+        indices.push(i00, i10, i11, i00, i11, i01);
+      }
+    }
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute("aBaseElev", new THREE.BufferAttribute(baseElev, 1));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    this.ringGeo = geo;
+
+    this.ringUniforms = {
+      uSunDir: { value: this._sunDir.clone() },
+      uTime: { value: 0.0 },
+      uWindDir: { value: new THREE.Vector2(0.85, -0.52) },
+      uCloudShadowAmt: { value: 0.3 },
+      uSmokeHaze: { value: 0.0 },
+      uDaylight: { value: 0.9 },
+      uSnowPackMm: { value: 0.0 },
+      uSnowLineM: { value: 3480.0 },
+      uZMinM: { value: this.meta.zMinM },
+      uExag: { value: this.state.exag },
+      uHalfInner: { value: this.sizeX * 0.5 - 0.03 },
+      uHalfOuter: { value: size * 0.5 },
+      uRingAlpha: { value: 0.0 },
+    };
+
+    const mat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: true,
+      uniforms: this.ringUniforms,
+      vertexShader: `
+        attribute float aBaseElev;
+        varying vec3 vWorldPos;
+        varying vec3 vNormal;
+        varying float vElevM;
+        uniform float uZMinM;
+        void main() {
+          vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
+          vNormal = normalize(normal);
+          vElevM = uZMinM + aBaseElev * 1000.0;
+          gl_Position = projectionMatrix * viewMatrix * vec4(vWorldPos, 1.0);
+        }
+      `,
+      fragmentShader: `
+        precision highp float;
+        uniform vec3 uSunDir;
+        uniform float uTime;
+        uniform vec2 uWindDir;
+        uniform float uCloudShadowAmt;
+        uniform float uSmokeHaze;
+        uniform float uDaylight;
+        uniform float uSnowPackMm;
+        uniform float uSnowLineM;
+        uniform float uExag;
+        uniform float uHalfInner;
+        uniform float uHalfOuter;
+        uniform float uRingAlpha;
+        varying vec3 vWorldPos;
+        varying vec3 vNormal;
+        varying float vElevM;
+
+        float hash21(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+        float vnoise(vec2 p) {
+          vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x), mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+        }
+        float fbm(vec2 p) {
+          float v = 0.0, a = 0.5;
+          for (int i = 0; i < 4; i++) { v += a * vnoise(p); p = p * 2.05 + vec2(7.3, 11.1); a *= 0.5; }
+          return v;
+        }
+
+        void main() {
+          if (uRingAlpha < 0.02) discard;
+          // Exact cutout inside the 11x11 km Sentinel-2 high-res block
+          float inBox = max(abs(vWorldPos.x), abs(vWorldPos.z));
+          if (inBox < uHalfInner) discard;
+          // Smooth radial fade into sky at the outer 35 km rim
+          float outerFade = 1.0 - smoothstep(uHalfOuter * 0.72, uHalfOuter * 0.99, length(vWorldPos.xz));
+          if (outerFade < 0.01) discard;
+
+          vec3 N = normalize(vNormal);
+          float slopeUp = clamp(N.y, 0.0, 1.0);
+          float n = fbm(vWorldPos.xz * 0.85);
+
+          // Linear-space Canadian Rockies elevation bands matching Sentinel-2 block reflectance (conifer -> limestone scree -> alpine snow/glaciers)
+          vec3 forest = vec3(0.022, 0.044, 0.024);
+          vec3 rock = mix(vec3(0.065, 0.056, 0.048), vec3(0.165, 0.145, 0.125), n);
+          vec3 alpineSnow = vec3(0.56, 0.64, 0.74);
+
+          float treeLine = smoothstep(1920.0, 2180.0, vElevM + (n - 0.5) * 180.0);
+          vec3 baseCol = mix(forest, rock, treeLine);
+          float permSnow = smoothstep(2620.0, 2950.0, vElevM + (n - 0.5) * 240.0) * smoothstep(0.38, 0.74, slopeUp);
+          baseCol = mix(baseCol, alpineSnow, permSnow * 0.86);
+
+          // Live fresh snow whitening synchronized with the main massif!
+          float packCover = 1.0 - exp(-max(uSnowPackMm, 0.0) / 2.6);
+          float freshMask = packCover * smoothstep(uSnowLineM - 120.0, uSnowLineM + 160.0, vElevM + (n - 0.5) * 140.0) * smoothstep(0.30, 0.70, slopeUp + 0.16 * n);
+          baseCol = mix(baseCol, vec3(0.64, 0.72, 0.82), clamp(freshMask * 0.92, 0.0, 0.92));
+
+          // Direct sun + sky hemisphere + moving cloud shadows (calibrated to MeshStandardMaterial Lambertian BRDF)
+          vec3 sDir = normalize(uSunDir);
+          float ndl = max(dot(N, sDir), 0.0);
+          float cloudSh = 1.0;
+          if (uCloudShadowAmt > 0.08 && uDaylight > 0.08) {
+            vec2 shP = vWorldPos.xz + sDir.xz * ((3.3 - vWorldPos.y) / max(sDir.y, 0.24));
+            float cn = fbm(shP * 0.26 - uWindDir * uTime * 0.065);
+            cloudSh = 1.0 - smoothstep(0.66 - uCloudShadowAmt * 0.42, 0.84, cn) * uCloudShadowAmt * 0.45 * uDaylight;
+          }
+          vec3 sunTint = mix(vec3(0.14, 0.24, 0.48), vec3(1.05, 0.88, 0.54), uDaylight);
+          vec3 ambCol = mix(vec3(0.015, 0.028, 0.065), vec3(0.28, 0.38, 0.52), uDaylight);
+          vec3 col = baseCol * (ambCol + sunTint * ndl * (0.20 + 0.92 * uDaylight) * cloudSh);
+
+          // Distance atmospheric perspective + identical analytical Beer-Lambert + Henyey-Greenstein wildfire smoke!
+          vec3 rayVec = vWorldPos - cameraPosition;
+          float rayLen = length(rayVec);
+          vec3 rayDir = rayVec / max(rayLen, 0.001);
+          float airMist = 1.0 - exp(-rayLen * 0.032);
+          vec3 airCol = mix(vec3(0.010, 0.018, 0.042), vec3(0.34, 0.48, 0.68), uDaylight);
+          col = mix(col, airCol, clamp(airMist * 0.62, 0.0, 0.68));
+
+          if (uSmokeHaze > 0.015) {
+            float H = 1.05 * uExag;
+            float yTop = 2.65 * uExag;
+            float y0 = max(0.0, cameraPosition.y);
+            float y1 = max(0.0, vWorldPos.y);
+            float effLen = rayLen;
+            float ya = y0;
+            if (y0 > yTop && y0 > y1 + 0.001) {
+              effLen = rayLen * (1.0 - clamp((y0 - yTop) / (y0 - y1), 0.0, 1.0));
+              ya = yTop;
+            } else if (y0 > yTop && y1 >= yTop) {
+              effLen = 0.0;
+            }
+            float dya = y1 - ya;
+            float avgExp = abs(dya) < 0.025 ? exp(-ya / H) : (exp(-ya / H) - exp(-y1 / H)) / (dya / H);
+            float optDepth = max(0.0, effLen * avgExp * (0.068 + 0.54 * pow(uSmokeHaze, 0.88)));
+            float hazeAmt = clamp((1.0 - exp(-optDepth)) * smoothstep(0.015, 0.16, uSmokeHaze), 0.0, 0.92);
+
+            float cosT = dot(rayDir, sDir);
+            float g = 0.58;
+            float hg = (1.0 - g * g) / pow(max(0.25, 1.0 + g * g - 2.0 * g * cosT), 1.5);
+            float sunGlow = clamp((hg - 0.35) * 0.24, 0.0, 0.68);
+
+            vec3 smokeCool = vec3(0.38, 0.37, 0.35);
+            vec3 smokeWarm = vec3(0.68, 0.45, 0.22);
+            vec3 smokeDense = vec3(0.64, 0.30, 0.10);
+            vec3 hazeDay = mix(smokeCool, smokeWarm, clamp(0.26 + 0.55 * sunGlow + 0.36 * uSmokeHaze, 0.0, 1.0));
+            hazeDay = mix(hazeDay, smokeDense, clamp((uSmokeHaze - 0.52) * 0.85, 0.0, 0.55));
+            hazeDay *= (1.0 - uCloudShadowAmt * 0.22);
+            vec3 hazeNight = vec3(0.010, 0.011, 0.016);
+            col = mix(col, mix(hazeNight, hazeDay, uDaylight), hazeAmt);
+          }
+
+          gl_FragColor = vec4(col, outerFade * uRingAlpha);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }
+      `,
+    });
+
+    this.ringMesh = new THREE.Mesh(geo, mat);
+    this.ringMesh.frustumCulled = false;
+    this.ringMesh.visible = false;
+    this.scene.add(this.ringMesh);
+  }
+
   _buildVolumetricSmoke() {
     this.smokeGroup = new THREE.Group();
     this.smokeSharedUniforms = {
@@ -829,12 +1131,11 @@ export class GlacierScene {
     sharedGeo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
     sharedGeo.setIndex(idxArr);
 
+    // Subtle silky wind-drifting valley smoke wisps (ONLY 2 ultra-soft laminar streams — zero stacked horizontal crêpes!
+    // Primary wildfire smoke depth & visibility attenuation is rendered continuously by the exact exponential radiative-transfer shader!)
     const layers = [
-      { heightAbove: 0.14, follow: 0.90, alpha: 0.31, scale: 2.7, speed: 0.72, seed: 1.3 },
-      { heightAbove: 0.34, follow: 0.78, alpha: 0.30, scale: 2.3, speed: 0.90, seed: 4.1 },
-      { heightAbove: 0.58, follow: 0.62, alpha: 0.27, scale: 2.0, speed: 1.08, seed: 7.9 },
-      { heightAbove: 0.86, follow: 0.42, alpha: 0.22, scale: 1.7, speed: 1.24, seed: 11.4 },
-      { heightAbove: 1.18, follow: 0.22, alpha: 0.18, scale: 1.5, speed: 1.42, seed: 15.8 },
+      { heightAbove: 0.22, follow: 0.85, alpha: 0.11, scale: 1.6, speed: 0.58, seed: 1.3 },
+      { heightAbove: 0.58, follow: 0.62, alpha: 0.09, scale: 1.2, speed: 0.78, seed: 7.9 },
     ];
 
     layers.forEach((cfg) => {
@@ -1867,11 +2168,20 @@ export class GlacierScene {
     sp.needsUpdate = true;
 
     this.smokeSharedUniforms.uExag.value = exag;
+    this.terrainUniforms.uExag.value = exag;
     this.cloudUniforms.uExag.value = exag;
     this.virgaUniforms.uExag.value = exag;
     this.mistUniforms.uExag.value = exag;
     this.rainUniforms.uExag.value = exag;
     this.snowUniforms.uExag.value = exag;
+    if (this.ringGeo) {
+      const rp = this.ringGeo.attributes.position;
+      const rb = this.ringGeo.attributes.aBaseElev;
+      for (let i = 0; i < rp.count; i++) rp.setY(i, rb.getX(i) * exag);
+      rp.needsUpdate = true;
+      this.ringGeo.computeVertexNormals();
+      this.ringUniforms.uExag.value = exag;
+    }
     this._syncCloudCeiling();
 
     // Keep on-glacier & webcam camera preset heights synced with new relief exaggeration
@@ -1892,15 +2202,23 @@ export class GlacierScene {
 
   setMode(mode) { this.state.mode = mode; this.terrainUniforms.uMode.value = mode; }
   setContours(on) { this.state.contours = on; this.terrainUniforms.uContours.value = on ? 1.0 : 0.0; }
-  setShowSmoke(on) { this.state.showSmoke = on; this.smokeGroup.visible = on; }
+  setShowSmoke(on) {
+    this.state.showSmoke = on;
+    this.smokeGroup.visible = on;
+    this._updateSolarAndAtmosphere();
+  }
   setShowClouds(on) {
     this.state.showClouds = on;
     this.cloudGroup.visible = on;
     this.skyUniforms.uShowClouds.value = on ? 1.0 : 0.0;
+    this._updateSolarAndAtmosphere();
   }
   setShowSunArc(on) {
     this.state.showSunArc = on;
     this.sunGroup.visible = on;
+  }
+  setShowHorizon(on) {
+    this.state.showHorizon = on;
   }
   setShowPrecip(on) {
     this.state.showPrecip = on;
@@ -1912,11 +2230,16 @@ export class GlacierScene {
   setShowIsotherm(on) { this.state.showIsotherm = on; this.terrainUniforms.uShowIsotherm.value = on ? 1.0 : 0.0; }
   setShadows(on) { this.state.shadows = on; this.sunLight.castShadow = on; this.renderer.shadowMap.enabled = on; }
   setBoost(boost) { this.state.boost = boost; this.terrainUniforms.uDepBoost.value = boost; }
-  setCompareClean(clean) { this.state.compareClean = clean; this._syncSurfaceUniforms(); }
+  setCompareClean(clean) {
+    this.state.compareClean = clean;
+    this._syncSurfaceUniforms();
+    this._updateSolarAndAtmosphere();
+  }
 
   setMeteorology({
     hour,
     depCumFrac,
+    rfWm2,
     plumeDensity,
     cloudCover,
     cloudLow,
@@ -1936,6 +2259,7 @@ export class GlacierScene {
   }) {
     this.state.hour = hour;
     this.state.depProgress = depCumFrac;
+    this.state.rfWm2 = rfWm2 ?? 0.0;
     this.state.plumeDensity = plumeDensity;
     this.state.cloudCover = cloudCover;
     this.state.cloudLow = cloudLow ?? cloudCover;
@@ -1996,10 +2320,15 @@ export class GlacierScene {
 
   _syncSurfaceUniforms() {
     this.terrainUniforms.uDepCumFrac.value = this.state.compareClean ? 0.0 : this.state.depProgress;
+    this.terrainUniforms.uRfNorm.value = this.state.compareClean ? 0.0 : Math.min(1.0, Math.max(0.0, this.state.rfWm2 / 52.0));
     this.terrainUniforms.uRainSnowM.value = this.state.rainSnowM;
     this.terrainUniforms.uSnowLineM.value = this.state.compareClean ? 3600.0 : this.state.snowLineM;
     this.terrainUniforms.uSnowPackMm.value = this.state.compareClean ? 0.0 : this.state.snowPackMm;
     this.terrainUniforms.uRainIntensity.value = Math.min(1.5, this.state.precipMmH / 2.0);
+    if (this.ringUniforms) {
+      this.ringUniforms.uSnowLineM.value = this.terrainUniforms.uSnowLineM.value;
+      this.ringUniforms.uSnowPackMm.value = this.terrainUniforms.uSnowPackMm.value;
+    }
   }
 
   _updateSolarAndAtmosphere() {
@@ -2065,9 +2394,19 @@ export class GlacierScene {
     this.sunOrbUniforms.uTwilight.value = twilight;
     this.sunArcMat.opacity = 0.08 + 0.18 * dayFactor * trans;
 
-    // Feed live smoke optical haze & daylight directly into terrain Koschmieder aerial-perspective scattering!
+    // Feed live smoke optical haze, sun vector, cloud shadows & daylight into terrain + 35 km Rockies horizon!
+    const shAmt = this.state.showClouds ? Math.max(this.state.cloudLow, this.state.cloudMid) : 0.0;
     this.terrainUniforms.uSmokeHaze.value = this.state.compareClean ? 0.0 : smoke;
     this.terrainUniforms.uDaylight.value = dayFactor;
+    this.terrainUniforms.uSunDir.value.copy(this._sunDir);
+    this.terrainUniforms.uCloudShadowAmt.value = shAmt;
+    if (this.ringUniforms) {
+      this.ringUniforms.uSmokeHaze.value = this.terrainUniforms.uSmokeHaze.value;
+      this.ringUniforms.uDaylight.value = dayFactor;
+      this.ringUniforms.uSunDir.value.copy(this._sunDir);
+      this.ringUniforms.uCloudShadowAmt.value = shAmt;
+      this.ringUniforms.uWindDir.value.copy(this.terrainUniforms.uWindDir.value);
+    }
 
     // Warm golden daytime sunlight vs unmistakable cool indigo moonlit night!
     const clearSun = new THREE.Color(0xffe08a);
@@ -2210,8 +2549,20 @@ export class GlacierScene {
     this.rainUniforms.uCamFocus.value.copy(focusPt);
     this.snowUniforms.uCamFocus.value.copy(focusPt);
 
+    // Seamless 35 km surrounding Rocky Mountains: automatically revealed in Vue Webcam / Sur le glacier / Survol, or when toggled ON!
+    if (this.ringMesh) {
+      const autoHorizon = smoothstep(10.2, 6.8, camDistTarget);
+      const targetAlpha = this.state.showHorizon ? 1.0 : autoHorizon;
+      this.ringUniforms.uRingAlpha.value = targetAlpha;
+      this.ringMesh.visible = targetAlpha > 0.02;
+      this.skirtMesh.visible = targetAlpha < 0.72;
+      this.floorMesh.visible = targetAlpha < 0.55;
+    }
+
     const windRate = 0.55 + 0.16 * this.state.windSpeed;
     this.skyUniforms.uTime.value += dt * windRate;
+    this.terrainUniforms.uTime.value += dt * windRate;
+    if (this.ringUniforms) this.ringUniforms.uTime.value += dt * windRate;
     this.smokeSharedUniforms.uTime.value += dt * windRate;
     this.cloudUniforms.uTime.value += dt * (0.45 + 0.12 * this.state.windSpeed);
     this.virgaUniforms.uTime.value += dt;

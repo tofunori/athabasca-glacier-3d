@@ -2,7 +2,9 @@ import "./style.css";
 import * as THREE from "three";
 import { GlacierScene } from "./glacierScene.js";
 
-const DATA_VER = "v9_webcam_sun_clouds_20261125";
+const DATA_VER = "v2_obs_20261125";
+const LF_J_PER_KG = 334000.0; // Latent heat of fusion for snow/ice (J kg-1)
+
 const loader = document.getElementById("loader");
 const loaderSub = document.getElementById("loaderSub");
 const canvas = document.getElementById("sceneCanvas");
@@ -12,15 +14,17 @@ const compassN = document.getElementById("compassN");
 const legendBody = document.getElementById("legendBody");
 
 async function loadAllAssets() {
-  loaderSub.textContent = "Chargement du MNE Copernicus GLO-30 (320 × 320) et des séquences horaires…";
-  const [metaRes, demRes] = await Promise.all([
+  loaderSub.textContent = "Chargement du MNE Athabasca + couronne Rocheuses 35 km (GLO-30)…";
+  const [metaRes, demRes, ringRes] = await Promise.all([
     fetch(`./data/meta.json?v=${DATA_VER}`, { cache: "no-store" }),
     fetch(`./data/dem_320.bin?v=${DATA_VER}`),
+    fetch(`./data/dem_ring_256.bin?v=${DATA_VER}`).catch(() => null),
   ]);
   if (!metaRes.ok || !demRes.ok) throw new Error("Impossible de charger les données du glacier.");
 
   const meta = await metaRes.json();
   const demU16 = new Uint16Array(await demRes.arrayBuffer());
+  const ringU16 = ringRes && ringRes.ok ? new Uint16Array(await ringRes.arrayBuffer()) : null;
 
   loaderSub.textContent = "Chargement de l'imagerie Sentinel-2 L2A (10 m)…";
   const texLoader = new THREE.TextureLoader();
@@ -29,7 +33,7 @@ async function loadAllAssets() {
     texLoader.loadAsync(`./data/s2_mask_768.png?v=${DATA_VER}`),
   ]);
 
-  return { meta, demU16, rgbTex, maskTex };
+  return { meta, demU16, ringU16, rgbTex, maskTex };
 }
 
 function lerp(a, b, t) {
@@ -57,7 +61,6 @@ function estimateLwin(taC, rhPct, cloudFrac) {
 }
 
 function swClearSkyWm2(hour, dateStr = "2023-08-18") {
-  // Approximate clear-sky solar irradiance at Athabasca Glacier (52.2° N, 2,180 m) by day-of-year & local hour
   const month = Number((dateStr || "2023-08-18").slice(5, 7)) || 8;
   const peakByMonth = { 1: 230, 2: 340, 3: 520, 4: 690, 5: 840, 6: 900, 7: 870, 8: 800, 9: 640, 10: 450, 11: 280, 12: 205 };
   const halfDayByMonth = { 1: 4.1, 2: 5.0, 3: 6.0, 4: 7.0, 5: 7.9, 6: 8.3, 7: 8.0, 8: 7.2, 9: 6.2, 10: 5.2, 11: 4.3, 12: 3.9 };
@@ -85,6 +88,21 @@ function wmoLabelFr(code) {
   return "";
 }
 
+function enrichEpisodeWithRfAndMelt(ep) {
+  let meltCum = 0.0;
+  for (let i = 0; i < ep.hours.length; i++) {
+    const r = ep.hours[i];
+    const da = r.deltaAlpha ?? 0;
+    const sw = r.sw ?? 0;
+    const rf = Math.max(0, -da * sw);
+    r.rf = Number(rf.toFixed(1));
+    // Radiative melt-energy equivalent (mm w.e. h-1) when surface is near/above melting threshold
+    const meltHr = (r.ta ?? 0) > -2.0 ? (rf * 3600.0) / LF_J_PER_KG : 0.0;
+    meltCum += meltHr;
+    r.extraMeltMm = Number(meltCum.toFixed(2));
+  }
+}
+
 async function fetchLiveAthabascaEpisode() {
   const url =
     "https://api.open-meteo.com/v1/forecast?latitude=52.1955&longitude=-117.2555&elevation=2180" +
@@ -99,7 +117,6 @@ async function fetchLiveAthabascaEpisode() {
   const dates = [...new Set(times.map((t) => t.slice(0, 10)))];
   const dayLabels = dates.map((ds) => `${Number(ds.slice(8, 10))} ${MONTH_FR[Number(ds.slice(5, 7))] || ds.slice(5, 7)}`);
 
-  // Locate current local Alberta hour inside the 72h series
   const nowParts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: "America/Edmonton",
     year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false,
@@ -109,13 +126,13 @@ async function fetchLiveAthabascaEpisode() {
   let nowIdx = times.indexOf(nowKey);
   if (nowIdx < 0) nowIdx = Math.min(times.length - 1, 24);
 
-  // If live weather is in winter / sub-freezing season, start with realistic seasonal snow cover across the valley!
   const firstMonth = Number(times[0].slice(5, 7)) || 8;
   const meanTa = h.temperature_2m.reduce((a, b) => a + Number(b ?? 0), 0) / Math.max(1, h.temperature_2m.length);
   const isWinterSnow = (firstMonth >= 11 || firstMonth <= 4) && meanTa < 0.0;
   let snowPackMm = isWinterSnow ? 14.0 : 0.0;
   let snowLineM = isWinterSnow ? 1840.0 : 3480.0;
   let rainCumMm = 0.0;
+
   const hours = times.map((tstr, idx) => {
     const ds = tstr.slice(0, 10);
     const dIdx = dates.indexOf(ds);
@@ -158,26 +175,25 @@ async function fetchLiveAthabascaEpisode() {
       rainSnowM: Math.round(zRs), snowLineM: Math.round(snowLineM), snowFrac: Number(snowFrac.toFixed(2)),
       snowPackMm: Number(snowPackMm.toFixed(1)), rainCumMm: Number(rainCumMm.toFixed(1)),
       dryRate: 0.0, wetRate: 0.0, depRate: 0.0, depCum: 0.0, wetFrac: 0.0, deltaAlpha: 0.0,
+      rf: 0.0, extraMeltMm: 0.0,
     };
   });
 
-  return {
-    nowIdx,
-    episode: {
-      id: "live-now",
-      label: "En direct · Athabasca",
-      tag: "Météo réelle",
-      isLive: true,
-      exactNas: false,
-      nDays: dates.length,
-      dayLabels,
-      subtitle: "Météo réelle en direct (Open-Meteo, 2 180 m, heure locale d'Alberta) : nuages bas/moyens/hauts, pluie/neige, vent et solaire.",
-      windBearingDeg: hours[nowIdx]?.wdir ?? 245,
-      totalDepMgM2: 0.0,
-      provenance: "Météo horaire en temps réel Open-Meteo pour le glacier Athabasca (52,1955° N, 117,2555° O, 2 180 m, America/Edmonton) : nuages 3 niveaux (bas, moyens, hauts), précipitations pluie/neige, rayonnement solaire SW↓, vent et code météo WMO (hier → demain).",
-      hours,
-    },
+  const episode = {
+    id: "live-now",
+    label: "En direct · Athabasca",
+    tag: "Météo réelle",
+    isLive: true,
+    exactNas: false,
+    nDays: dates.length,
+    dayLabels,
+    subtitle: "Météo réelle en direct (Open-Meteo, 2 180 m, heure locale d'Alberta) : nuages bas/moyens/hauts, pluie/neige, vent et solaire.",
+    windBearingDeg: hours[nowIdx]?.wdir ?? 245,
+    totalDepMgM2: 0.0,
+    provenance: "Météo horaire en temps réel Open-Meteo pour le glacier Athabasca (52,1955° N, 117,2555° O, 2 180 m, America/Edmonton).",
+    hours,
   };
+  return { nowIdx, episode };
 }
 
 function sampleSequenceAtStep(ep, tFloat) {
@@ -191,7 +207,6 @@ function sampleSequenceAtStep(ep, tFloat) {
   const hourOfDay = a.h + f;
   const depCum = lerp(a.depCum ?? 0, b.depCum ?? 0, f);
   const totDep = ep.totalDepMgM2 || ep.dailyDepMgM2 || 0;
-  // Perceptual log-scaled soot accumulation so 10-30 mg m-2 dry deposits are clearly visible on the glacier surface!
   const depCumFrac = totDep > 0.05 ? Math.log1p(depCum / 16.0) / Math.log1p(Math.max(totDep, 45.0) / 16.0) : 0.0;
 
   return {
@@ -206,6 +221,8 @@ function sampleSequenceAtStep(ep, tFloat) {
     wetRate: lerp(a.wetRate ?? 0, b.wetRate ?? 0, f),
     depCumFrac,
     deltaAlpha: lerp(a.deltaAlpha ?? 0, b.deltaAlpha ?? 0, f),
+    rf: lerp(a.rf ?? 0, b.rf ?? 0, f),
+    extraMeltMm: lerp(a.extraMeltMm ?? 0, b.extraMeltMm ?? 0, f),
     pm25: a.pm25 == null || b.pm25 == null ? null : lerp(a.pm25, b.pm25, f),
     daod: a.daod == null || b.daod == null ? null : lerp(a.daod, b.daod, f),
     sw: lerp(a.sw ?? 0, b.sw ?? 0, f),
@@ -231,30 +248,27 @@ function sampleSequenceAtStep(ep, tFloat) {
 function describePhase(epId, s, labMode) {
   if (labMode) return "Laboratoire météo manuel";
   const wmoTxt = wmoLabelFr(s.wmo);
-  if (epId === "live-now") {
-    const clPct = Math.round(s.cloud * 100);
-    return `${wmoTxt || "Météo en direct"} · Nuages ${clPct} %`;
-  }
+  if (epId === "live-now") return `${wmoTxt || "Météo en direct"} · Nuages ${Math.round(s.cloud * 100)} %`;
   if (s.hour < 6.0 || s.hour >= 21.5) {
-    if (s.wetRate >= 2.0) return "Lessivage nocturne intense de la fumée";
-    if (s.precip >= 0.4) return s.rainSnowM < 2350 ? "Neige nocturne sur le glacier" : "Pluie nocturne · neige en altitude";
-    if (s.pm25 !== null && s.pm25 >= 50) return `Fumée nocturne dense (${Math.round(s.pm25)} µg m⁻³)`;
-    return s.cloud > 0.65 ? "Nuit alpine couverte" : "Nuit alpine · ciel étoilé";
+    if (s.wetRate >= 2.0) return "Lessivage nocturne intense";
+    if (s.precip >= 0.4) return s.rainSnowM < 2350 ? "Neige nocturne" : "Pluie nocturne · neige en altitude";
+    if (s.pm25 !== null && s.pm25 >= 50) return `Fumée nocturne (${Math.round(s.pm25)} µg/m³)`;
+    return s.cloud > 0.65 ? "Nuit alpine couverte" : "Nuit alpine étoilée";
   }
   if (s.precip >= 0.45) {
-    if (s.wetRate >= 1.5) return "Lessivage humide (EC+OM) sous précipitations";
-    if (s.rainSnowM <= 2280) return "Chute de neige jusqu'au bas du glacier";
-    return `Pluie en vallée · Neige > ${Math.round(s.rainSnowM)} m`;
+    if (s.wetRate >= 1.5) return "Lessivage humide (EC+OM)";
+    if (s.rainSnowM <= 2280) return "Neige jusqu'au bas du glacier";
+    return `Pluie · Neige > ${Math.round(s.rainSnowM)} m`;
   }
-  if (epId === "2024-07-22_29" && s.plume > 0.72) return "Panache illustratif du mégafeu de Jasper";
+  if (epId === "2024-07-22_29" && s.plume > 0.72) return "Panache illustratif Jasper";
   if (s.pm25 !== null && s.pm25 < 2.0 && (s.daod ?? 0) < 0.02) {
-    return s.snowPackMm >= 2.5 ? `${wmoTxt || "Air alpin pur"} · neige fraîche` : `${wmoTxt || "Air alpin limpide"} (0 dépôt)`;
+    return s.snowPackMm >= 2.5 ? `${wmoTxt || "Air pur"} · neige fraîche` : `${wmoTxt || "Air alpin limpide"}`;
   }
-  if (s.pm25 !== null && s.pm25 >= 80) return `Panache extrême · PM2,5 = ${Math.round(s.pm25)} µg m⁻³`;
-  if (s.plume > 0.55) return "Fumée dense · dépôt sec actif";
+  if (s.pm25 !== null && s.pm25 >= 80) return `Panache extrême · ${Math.round(s.pm25)} µg/m³`;
+  if (s.plume > 0.55) return "Fumée dense · dépôt sec";
   if (s.pm25 !== null && s.pm25 >= 8) return `Brume de feux · ${wmoTxt || "dépôt sec"}`;
-  if (s.snowPackMm >= 3 && s.ta > 4.0) return "Fonte progressive de la neige fraîche";
-  return wmoTxt ? `${wmoTxt} · nuages ${Math.round(s.cloud * 100)} %` : "Évolution météorologique en vallée";
+  if (s.snowPackMm >= 3 && s.ta > 4.0) return "Fonte de la neige fraîche";
+  return wmoTxt || "Évolution météo";
 }
 
 function formatHour(h) {
@@ -268,24 +282,143 @@ function fmtFr(val, dec = 1) {
 }
 
 const EP_START_T = {
-  "2023-08-17_24": 36.5,    // 18 août 2023 12h30 MDT : orage pluie/neige + lessivage humide (19 août pur -> 20 août retour fumée!)
-  "2023-06-11_18": 33.0,    // 12 juin 2023 09h00 MDT : panache extrême 375 µg m-3, ΔAOD 1,05
-  "2023-08-26_0902": 132.0, // 31 août 2023 12h00 MDT : pluie de lessivage 42 mg m-2
-  "2021-08-12_19": 59.5,    // 14 août 2021 11h30 MDT : record dépôt sec (PM2,5 166, ΔAOD 1,25)
-  "2024-07-22_29": 80.5,    // 25 juil. 2024 08h30 MDT : Jasper ERA5 + front pluie/neige
-  "2018-08-21_28": 83.5,    // 24 août 2018 11h30 MDT : AWS + NAS tempête pluie/neige & lessivage
+  "2023-08-17_24": 36.5,
+  "2023-06-11_18": 33.0,
+  "2023-08-26_0902": 132.0,
+  "2021-08-12_19": 59.5,
+  "2024-07-22_29": 80.5,
+  "2018-08-21_28": 83.5,
 };
+
+const EP_META_UI = {
+  "2023-08-17_24": { dot: "amber", title: "Août 2023 · 17–24", sub: "198,6 mg m⁻² · NAS + Webcam" },
+  "2023-06-11_18": { dot: "hot",   title: "Juin 2023 · 11–18", sub: "PM2,5 375 + Blizzard · NAS" },
+  "2023-08-26_0902": { dot: "amber", title: "Fin août 2023 · 26–2", sub: "85,4 mg m⁻² · NAS + Webcam" },
+  "2021-08-12_19": { dot: "amber", title: "Août 2021 · 12–19", sub: "Record sec · ΔAOD 1,33" },
+  "2024-07-22_29": { dot: "hot",   title: "Juil. 2024 · Jasper", sub: "ERA5 réel + 144 webcams" },
+  "2018-08-21_28": { dot: "",      title: "Août 2018 · 21–28", sub: "AWS réelle + NAS (143,9 mg)" },
+  "live-now":      { dot: "live",  title: "En direct · Athabasca", sub: "Open-Meteo temps réel" },
+};
+
+function drawAltitudinalProfile(ctx, w, h, s, isClean, awsElevM = 2180, lapse = 6.5) {
+  ctx.clearRect(0, 0, w, h);
+  const padL = 38, padR = 44, padT = 10, padB = 20;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+  const zMin = 1850, zMax = 3520;
+  const tMin = -12, tMax = 20;
+
+  const yOfZ = (z) => padT + (1 - (z - zMin) / (zMax - zMin)) * plotH;
+  const xOfT = (t) => padL + ((t - tMin) / (tMax - tMin)) * plotW;
+
+  // 1. Rain vs Snow atmospheric phase shading divided by live Jennings isotherm!
+  const yIso = Math.max(padT, Math.min(padT + plotH, yOfZ(s.rainSnowM)));
+  ctx.fillStyle = "rgba(125, 211, 252, 0.10)";
+  ctx.fillRect(padL, padT, plotW, Math.max(0, yIso - padT));
+  ctx.fillStyle = "rgba(59, 130, 246, 0.08)";
+  ctx.fillRect(padL, yIso, plotW, Math.max(0, padT + plotH - yIso));
+
+  // 2. Subtle horizontal elevation gridlines (2000, 2500, 3000, 3500 m)
+  ctx.strokeStyle = "rgba(186, 218, 255, 0.11)";
+  ctx.lineWidth = 1;
+  ctx.fillStyle = "#8ea3bc";
+  ctx.font = "500 9.5px Inter, sans-serif";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  [2000, 2500, 3000, 3500].forEach((z) => {
+    const y = yOfZ(z);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.fillText(`${z}`, padL - 4, y);
+  });
+
+  // 3. Vertical 0 °C reference line
+  const x0 = xOfT(0);
+  ctx.save();
+  ctx.setLineDash([3, 3]);
+  ctx.strokeStyle = "rgba(226, 240, 255, 0.25)";
+  ctx.beginPath(); ctx.moveTo(x0, padT); ctx.lineTo(x0, padT + plotH); ctx.stroke();
+  ctx.restore();
+
+  // X-axis temperature ticks
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  [-10, 0, 10, 20].forEach((tv) => {
+    ctx.fillStyle = tv === 0 ? "#cbd5e1" : "#7c91ab";
+    ctx.fillText(`${tv}°`, xOfT(tv), padT + plotH + 4);
+  });
+
+  // 4. Right-hand bar column: instantaneous RF (W m-2) by elevation band (ablation vs transition vs accumulation)
+  const barX = padL + plotW + 6;
+  const barW = padR - 10;
+  const nBands = 10;
+  const snowResetLine = isClean ? 3600 : s.snowLineM;
+  const packCover = isClean ? 0 : 1 - Math.exp(-Math.max(0, s.snowPackMm) / 2.6);
+  for (let i = 0; i < nBands; i++) {
+    const z0 = 1965 + (i / nBands) * (3456 - 1965);
+    const z1 = 1965 + ((i + 1) / nBands) * (3456 - 1965);
+    const zm = 0.5 * (z0 + z1);
+    const isAbl = zm < 2550 ? 1.25 : 0.85;
+    const snowBurial = zm > snowResetLine ? packCover * 0.88 : 0.0;
+    const bandRf = isClean ? 0 : Math.max(0, s.rf * isAbl * (1 - snowBurial));
+    const frac = Math.min(1, bandRf / 52.0);
+    const yTop = yOfZ(z1);
+    const bh = Math.max(1, yOfZ(z0) - yTop - 1.5);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
+    ctx.fillRect(barX, yTop, barW, bh);
+    if (frac > 0.01) {
+      ctx.fillStyle = frac > 0.6 ? "#fb923c" : (frac > 0.25 ? "#f97316" : "#c2410c");
+      ctx.fillRect(barX, yTop, Math.max(2, frac * barW), bh);
+    }
+  }
+  ctx.fillStyle = "#fdba74";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  ctx.fillText("RF", barX + barW * 0.5, padT + plotH + 4);
+
+  // 5. Live Jennings rain-snow isotherm line
+  if (s.rainSnowM >= zMin && s.rainSnowM <= zMax) {
+    ctx.save();
+    ctx.setLineDash([4, 3]);
+    ctx.strokeStyle = "#38bdf8";
+    ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(padL, yIso); ctx.lineTo(padL + plotW, yIso); ctx.stroke();
+    ctx.restore();
+    ctx.fillStyle = "#7dd3fc";
+    ctx.textAlign = "left";
+    ctx.textBaseline = yIso > padT + 14 ? "bottom" : "top";
+    ctx.fillText(`Neige > ${Math.round(s.rainSnowM)} m`, padL + 4, yIso + (yIso > padT + 14 ? -3 : 3));
+  }
+
+  // 6. Live temperature vertical profile T(z) = Ta_aws - 6.5 * (z - 2.18)
+  const tBot = s.ta - lapse * ((zMin - awsElevM) / 1000.0);
+  const tTop = s.ta - lapse * ((zMax - awsElevM) / 1000.0);
+  ctx.strokeStyle = "#fbbf24";
+  ctx.lineWidth = 2.0;
+  ctx.beginPath();
+  ctx.moveTo(Math.max(padL, Math.min(padL + plotW, xOfT(tBot))), yOfZ(zMin));
+  ctx.lineTo(Math.max(padL, Math.min(padL + plotW, xOfT(tTop))), yOfZ(zMax));
+  ctx.stroke();
+
+  // AWS point marker (2,180 m)
+  const xAws = Math.max(padL, Math.min(padL + plotW, xOfT(s.ta)));
+  const yAws = yOfZ(awsElevM);
+  ctx.fillStyle = "#fde047";
+  ctx.beginPath(); ctx.arc(xAws, yAws, 3.2, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = "#070b11"; ctx.lineWidth = 1.2; ctx.stroke();
+}
 
 async function boot() {
   try {
     const assets = await loadAllAssets();
-    const { meta, demU16, rgbTex, maskTex } = assets;
-    loaderSub.textContent = "Initialisation de la scène 3D…";
-    const glacier = new GlacierScene(canvas, meta, demU16, rgbTex, maskTex);
+    const { meta, demU16, ringU16, rgbTex, maskTex } = assets;
+    Object.values(meta.episodes).forEach(enrichEpisodeWithRfAndMelt);
+
+    loaderSub.textContent = "Initialisation de la scène 3D v2…";
+    const glacier = new GlacierScene(canvas, meta, demU16, rgbTex, maskTex, ringU16);
 
     const pins = meta.landmarks.map((lm) => {
       const el = document.createElement("div");
-      el.className = "pin-label";
+      el.className = "pin-label hud-el";
       el.innerHTML = `
         <div class="pin-card">
           <span class="pin-name">${lm.name}</span>
@@ -298,20 +431,18 @@ async function boot() {
       return { el, lm };
     });
 
-    // Safe default episode selection (exact NAS Aug 17-24, 2023 sequence!)
     let currentEpId = "2023-08-17_24";
-    if (!meta.episodes[currentEpId]) {
-      currentEpId = Object.keys(meta.episodes)[0];
-    }
+    if (!meta.episodes[currentEpId]) currentEpId = Object.keys(meta.episodes)[0];
     let currentT = EP_START_T[currentEpId] ?? 12.0;
     let playing = true;
     const speeds = [0.5, 1, 2, 4];
-    let speedIdx = 0; // 0.5x immersive pace by default
+    let speedIdx = 0;
     let showLabels = true;
     let chartMetric = "precip";
+    let presentMode = false;
 
     let labActive = false;
-    const lab = { smoke: 0.5, sw: 350, cloud: 0.4, precip: 0.0, ta: 3.5, wind: 5.0 };
+    const lab = { smoke: 0.35, sw: 350, cloud: 0.4, precip: 0.0, ta: 3.5, wind: 5.0 };
 
     const timeSlider = document.getElementById("timeSlider");
     const histBars = document.getElementById("histBars");
@@ -319,6 +450,9 @@ async function boot() {
     const clockDate = document.getElementById("clockDate");
     const clockTime = document.getElementById("clockTime");
     const clockPhase = document.getElementById("clockPhase");
+    const presentBar = document.getElementById("presentBar");
+    const presentClock = document.getElementById("presentClock");
+    const presentMeta = document.getElementById("presentMeta");
     const sunDot = document.getElementById("sunDot");
     const kpiSwLw = document.getElementById("kpiSwLw");
     const kpiSmoke = document.getElementById("kpiSmoke");
@@ -329,7 +463,42 @@ async function boot() {
     const modalProvenance = document.getElementById("modalProvenance");
     const liveTag = document.getElementById("liveTag");
 
-    // Synchronized Skaping Columbia Icefield Webcam PiP & Lightbox
+    // Episode Dropdown UI
+    const epDropdown = document.getElementById("epDropdown");
+    const epTrigger = document.getElementById("epTrigger");
+    const epMenu = document.getElementById("epMenu");
+    const epTriggerDot = document.getElementById("epTriggerDot");
+    const epTriggerTitle = document.getElementById("epTriggerTitle");
+    const epTriggerSub = document.getElementById("epTriggerSub");
+
+    epTrigger.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const hidden = epMenu.classList.toggle("hidden");
+      epTrigger.setAttribute("aria-expanded", hidden ? "false" : "true");
+    });
+    window.addEventListener("click", (e) => {
+      if (!epDropdown.contains(e.target)) {
+        epMenu.classList.add("hidden");
+        epTrigger.setAttribute("aria-expanded", "false");
+      }
+    });
+
+    // Altitudinal Profile & RF Card
+    const profileCard = document.getElementById("profileCard");
+    const btnProfileToggle = document.getElementById("btnProfileToggle");
+    const profileCanvas = document.getElementById("profileCanvas");
+    const profileCtx = profileCanvas.getContext("2d");
+    const valRfNow = document.getElementById("valRfNow");
+    const valExtraMelt = document.getElementById("valExtraMelt");
+    let profileVisible = true;
+    btnProfileToggle.addEventListener("click", () => {
+      profileVisible = !profileVisible;
+      profileCard.classList.toggle("hidden", !profileVisible);
+      btnProfileToggle.classList.toggle("active-cam", profileVisible);
+      btnProfileToggle.setAttribute("aria-pressed", profileVisible ? "true" : "false");
+    });
+
+    // Synchronized Skaping Webcam PiP + Drag/Resize + Lightbox
     const webcamCard = document.getElementById("webcamCard");
     const btnWebcamToggle = document.getElementById("btnWebcamToggle");
     const btnWebcamClose = document.getElementById("btnWebcamClose");
@@ -358,22 +527,14 @@ async function boot() {
       if (slash < 0) return "";
       return `${skapingBase}/${compactRel.slice(0, slash)}/${sizeDir}/${compactRel.slice(slash + 1)}`;
     }
-
     function skapingArchiveDeepLink(unixTs) {
       if (!unixTs) return "https://www.skaping.com/columbiaicefield";
-      const b64 = btoa(String(unixTs)).replace(/=+$/, "");
-      return `https://www.skaping.com/columbiaicefield?archives=${b64}`;
+      return `https://www.skaping.com/columbiaicefield?archives=${btoa(String(unixTs)).replace(/=+$/, "")}`;
     }
-
     function preloadWebcamUrl(url) {
       if (!url || camPreloadCache.has(url)) return;
-      if (camPreloadCache.size > 48) {
-        const firstKey = camPreloadCache.keys().next().value;
-        camPreloadCache.delete(firstKey);
-      }
-      const im = new Image();
-      im.src = url;
-      camPreloadCache.set(url, im);
+      if (camPreloadCache.size > 48) camPreloadCache.delete(camPreloadCache.keys().next().value);
+      const im = new Image(); im.src = url; camPreloadCache.set(url, im);
     }
 
     function updateWebcamForHour(ep, tFloat) {
@@ -396,31 +557,23 @@ async function boot() {
       if (!ep.hasWebcam) {
         webcamStamp.textContent = row.dayLabel;
         webcamImg.removeAttribute("src");
-        webcamOverlay.textContent = "Archives Skaping disponibles à partir du 18 juin 2019 (août 2018 antérieur à la caméra).";
+        webcamOverlay.textContent = "Archives Skaping disponibles dès juin 2019 (août 2018 antérieur).";
         webcamOverlay.classList.remove("hidden");
         webcamLink.href = "https://www.skaping.com/columbiaicefield";
         currentCamLargeUrl = "";
         return;
       }
-
       if (row.cam) {
         const smallUrl = buildSkapingUrl(row.cam, "small");
-        const largeUrl = buildSkapingUrl(row.cam, "large");
-        currentCamLargeUrl = largeUrl;
+        currentCamLargeUrl = buildSkapingUrl(row.cam, "large");
         currentCamSkapingUrl = skapingArchiveDeepLink(row.camTs);
         webcamStamp.textContent = `${row.dayLabel} · ${String(row.h).padStart(2, "0")}:00`;
         webcamLink.href = currentCamSkapingUrl;
         webcamImg.classList.remove("dimmed");
         webcamOverlay.classList.add("hidden");
-
-        // Double-buffered swap so rapid scrubbing never flashes blank!
         const loaderImg = new Image();
-        loaderImg.onload = () => {
-          if (lastCamKey === key) webcamImg.src = smallUrl;
-        };
+        loaderImg.onload = () => { if (lastCamKey === key) webcamImg.src = smallUrl; };
         loaderImg.src = smallUrl;
-
-        // Preload next 2 daytime frames ahead for buttery smooth playback
         for (let step = 1; step <= 2; step++) {
           const nxt = ep.hours[idx + step];
           if (nxt && nxt.cam) preloadWebcamUrl(buildSkapingUrl(nxt.cam, "small"));
@@ -438,12 +591,8 @@ async function boot() {
       webcamCard.classList.toggle("hidden", !on);
       btnWebcamToggle.classList.toggle("active-cam", on);
       btnWebcamToggle.setAttribute("aria-pressed", on ? "true" : "false");
-      if (on) {
-        lastCamKey = "";
-        updateWebcamForHour(meta.episodes[currentEpId], currentT);
-      }
+      if (on) { lastCamKey = ""; updateWebcamForHour(meta.episodes[currentEpId], currentT); }
     }
-
     btnWebcamToggle.addEventListener("click", () => setWebcamVisible(!webcamVisible));
     btnWebcamClose.addEventListener("click", () => setWebcamVisible(false));
     btnMatchCam.addEventListener("click", () => {
@@ -463,32 +612,24 @@ async function boot() {
     document.getElementById("btnCloseWebcamModal").addEventListener("click", () => webcamModal.classList.add("hidden"));
     webcamModal.addEventListener("click", (e) => { if (e.target === webcamModal) webcamModal.classList.add("hidden"); });
 
-    // Smooth drag (header) & resize (bottom-right corner) for the floating Webcam PiP window
+    // Draggable & Resizable Webcam PiP
     const webcamDragHandle = document.getElementById("webcamDragHandle");
     const webcamResizeHandle = document.getElementById("webcamResizeHandle");
-    let dragState = null;
-    let resizeState = null;
-
+    let dragState = null, resizeState = null;
     function clampWebcamInViewport() {
       if (!webcamCard.style.left && !webcamCard.style.top) return;
       const rect = webcamCard.getBoundingClientRect();
       const maxX = Math.max(8, window.innerWidth - rect.width - 8);
       const maxY = Math.max(8, window.innerHeight - rect.height - 8);
-      const curX = parseFloat(webcamCard.style.left) || rect.left;
-      const curY = parseFloat(webcamCard.style.top) || rect.top;
-      webcamCard.style.left = `${Math.max(8, Math.min(maxX, curX))}px`;
-      webcamCard.style.top = `${Math.max(8, Math.min(maxY, curY))}px`;
+      webcamCard.style.left = `${Math.max(8, Math.min(maxX, parseFloat(webcamCard.style.left) || rect.left))}px`;
+      webcamCard.style.top = `${Math.max(8, Math.min(maxY, parseFloat(webcamCard.style.top) || rect.top))}px`;
     }
-
     webcamDragHandle.addEventListener("pointerdown", (e) => {
       if (e.target.closest("button, a")) return;
-      e.preventDefault();
-      e.stopPropagation();
+      e.preventDefault(); e.stopPropagation();
       const rect = webcamCard.getBoundingClientRect();
-      webcamCard.style.left = `${rect.left}px`;
-      webcamCard.style.top = `${rect.top}px`;
-      webcamCard.style.right = "auto";
-      webcamCard.style.bottom = "auto";
+      webcamCard.style.left = `${rect.left}px`; webcamCard.style.top = `${rect.top}px`;
+      webcamCard.style.right = "auto"; webcamCard.style.bottom = "auto";
       webcamCard.classList.add("dragging");
       dragState = { id: e.pointerId, dx: e.clientX - rect.left, dy: e.clientY - rect.top };
       webcamDragHandle.setPointerCapture(e.pointerId);
@@ -496,44 +637,32 @@ async function boot() {
     webcamDragHandle.addEventListener("pointermove", (e) => {
       if (!dragState || e.pointerId !== dragState.id) return;
       const rect = webcamCard.getBoundingClientRect();
-      const nx = Math.max(8, Math.min(window.innerWidth - rect.width - 8, e.clientX - dragState.dx));
-      const ny = Math.max(8, Math.min(window.innerHeight - rect.height - 8, e.clientY - dragState.dy));
-      webcamCard.style.left = `${nx}px`;
-      webcamCard.style.top = `${ny}px`;
+      webcamCard.style.left = `${Math.max(8, Math.min(window.innerWidth - rect.width - 8, e.clientX - dragState.dx))}px`;
+      webcamCard.style.top = `${Math.max(8, Math.min(window.innerHeight - rect.height - 8, e.clientY - dragState.dy))}px`;
     });
     const endDrag = (e) => {
       if (!dragState || e.pointerId !== dragState.id) return;
-      dragState = null;
-      webcamCard.classList.remove("dragging");
+      dragState = null; webcamCard.classList.remove("dragging");
       try { webcamDragHandle.releasePointerCapture(e.pointerId); } catch {}
     };
     webcamDragHandle.addEventListener("pointerup", endDrag);
     webcamDragHandle.addEventListener("pointercancel", endDrag);
     webcamDragHandle.addEventListener("dblclick", (e) => {
       if (e.target.closest("button, a")) return;
-      webcamCard.style.left = "";
-      webcamCard.style.top = "";
-      webcamCard.style.right = "";
-      webcamCard.style.bottom = "";
-      webcamCard.style.width = "";
+      webcamCard.style.left = ""; webcamCard.style.top = ""; webcamCard.style.right = ""; webcamCard.style.bottom = ""; webcamCard.style.width = "";
     });
-
     webcamResizeHandle.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+      e.preventDefault(); e.stopPropagation();
       const rect = webcamCard.getBoundingClientRect();
-      webcamCard.style.left = `${rect.left}px`;
-      webcamCard.style.top = `${rect.top}px`;
-      webcamCard.style.right = "auto";
-      webcamCard.style.bottom = "auto";
+      webcamCard.style.left = `${rect.left}px`; webcamCard.style.top = `${rect.top}px`;
+      webcamCard.style.right = "auto"; webcamCard.style.bottom = "auto";
       resizeState = { id: e.pointerId, startX: e.clientX, startW: rect.width };
       webcamResizeHandle.setPointerCapture(e.pointerId);
     });
     webcamResizeHandle.addEventListener("pointermove", (e) => {
       if (!resizeState || e.pointerId !== resizeState.id) return;
       const maxW = Math.min(720, window.innerWidth - (parseFloat(webcamCard.style.left) || 16) - 12);
-      const nw = Math.max(240, Math.min(maxW, resizeState.startW + (e.clientX - resizeState.startX)));
-      webcamCard.style.width = `${Math.round(nw)}px`;
+      webcamCard.style.width = `${Math.round(Math.max(240, Math.min(maxW, resizeState.startW + (e.clientX - resizeState.startX))))}px`;
       clampWebcamInViewport();
     });
     const endResize = (e) => {
@@ -545,6 +674,69 @@ async function boot() {
     webcamResizeHandle.addEventListener("pointercancel", endResize);
     window.addEventListener("resize", clampWebcamInViewport);
 
+    // One-Click Clean WebGL Video Recorder (captures #sceneCanvas cleanly without HUD!)
+    const btnRecTop = document.getElementById("btnRecTop");
+    const recLabel = document.getElementById("recLabel");
+    let recorder = null, recChunks = [], recTimer = null, recSec = 0;
+
+    function stopRecording() {
+      if (recorder && recorder.state !== "inactive") recorder.stop();
+      if (recTimer) { clearInterval(recTimer); recTimer = null; }
+      btnRecTop.classList.remove("recording");
+      recLabel.textContent = "Clip";
+    }
+
+    function toggleRecording() {
+      if (recorder && recorder.state === "recording") { stopRecording(); return; }
+      if (!canvas.captureStream || typeof MediaRecorder === "undefined") {
+        alert("L'enregistrement vidéo direct n'est pas pris en charge par ce navigateur.");
+        return;
+      }
+      const mimes = ["video/mp4;codecs=avc1", "video/mp4", "video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+      const mimeType = mimes.find((m) => MediaRecorder.isTypeSupported(m)) || "";
+      const stream = canvas.captureStream(30);
+      recChunks = [];
+      recorder = new MediaRecorder(stream, mimeType ? { mimeType, videoBitsPerSecond: 6000000 } : { videoBitsPerSecond: 6000000 });
+      recorder.ondataavailable = (ev) => { if (ev.data && ev.data.size > 0) recChunks.push(ev.data); };
+      recorder.onstop = () => {
+        const ext = mimeType.includes("mp4") ? "mp4" : "webm";
+        const blob = new Blob(recChunks, { type: mimeType || "video/webm" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        const ep = meta.episodes[currentEpId];
+        const s = sampleSequenceAtStep(ep, currentT);
+        a.download = `athabasca_3d_v2_${s.date}_${formatHour(s.hour).replace(":", "h")}.${ext}`;
+        a.href = url;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      };
+      recorder.start();
+      if (!playing) setPlaying(true);
+      recSec = 0;
+      btnRecTop.classList.add("recording");
+      recLabel.textContent = "0s";
+      recTimer = setInterval(() => {
+        recSec++;
+        recLabel.textContent = `${recSec}s`;
+        if (recSec >= 20) stopRecording();
+      }, 1000);
+    }
+    btnRecTop.addEventListener("click", toggleRecording);
+
+    // Presentation Mode (H)
+    function setPresentationMode(on) {
+      presentMode = on;
+      document.body.classList.toggle("present-mode", on);
+      presentBar.classList.toggle("hidden", !on);
+      if (on) {
+        epMenu.classList.add("hidden");
+        settingsDrawer.classList.add("hidden");
+      }
+    }
+    document.getElementById("btnPresent").addEventListener("click", () => setPresentationMode(!presentMode));
+    document.getElementById("btnExitPresent").addEventListener("click", () => setPresentationMode(false));
+
+    // Weather Lab Sliders
     const slLabSmoke = document.getElementById("slLabSmoke");
     const slLabSw = document.getElementById("slLabSw");
     const slLabCloud = document.getElementById("slLabCloud");
@@ -559,13 +751,16 @@ async function boot() {
     const valLabWind = document.getElementById("valLabWind");
     const btnSyncAws = document.getElementById("btnSyncAws");
 
-    let barEls = [];
-    let dayPillEls = [];
-    let histBinHours = 1;
+    let barEls = [], dayPillEls = [], histBinHours = 1;
 
     function rebuildTimelineChrome() {
       const ep = meta.episodes[currentEpId];
       timeSlider.max = String(ep.hours.length - 1);
+
+      const ui = EP_META_UI[currentEpId] || { dot: "amber", title: ep.label, sub: ep.tag || "" };
+      epTriggerDot.className = `ep-dot ${ui.dot}`;
+      epTriggerTitle.textContent = ui.title;
+      epTriggerSub.textContent = ui.sub;
 
       dayPillsWrap.innerHTML = "";
       const labels = ep.dayLabels || [];
@@ -597,7 +792,7 @@ async function boot() {
           const idx = b * histBinHours + k;
           if (idx < ep.hours.length) {
             const r = ep.hours[idx];
-            if (chartMetric === "ta") acc += Math.max(0, (r.ta ?? 0) + 4.0);
+            if (chartMetric === "ta") acc += Math.max(0, (r.ta ?? 0) + 6.0);
             else if (chartMetric === "pm25") acc += r.pm25 != null ? r.pm25 : (r.plume || 0) * 100.0;
             else acc += r[chartMetric] || 0;
             cnt++;
@@ -611,16 +806,10 @@ async function boot() {
         const el = document.createElement("div");
         el.className = `hist-bar ${chartMetric}`;
         let frac;
-        if (chartMetric === "depRate") {
-          // Perceptual log scale so 0.1-5 mg/h dry & moderate peaks remain clearly visible beside 48 mg/h storm spikes!
-          frac = v <= 0.005 ? 0.0 : Math.log1p(v * 4.0) / Math.log1p(maxV * 4.0);
-        } else if (chartMetric === "pm25") {
-          frac = v <= 0.5 ? 0.0 : Math.log1p(v * 0.25) / Math.log1p(maxV * 0.25);
-        } else if (chartMetric === "precip") {
-          frac = v <= 0.02 ? 0.0 : Math.sqrt(v / maxV);
-        } else {
-          frac = v / maxV;
-        }
+        if (chartMetric === "depRate") frac = v <= 0.005 ? 0.0 : Math.log1p(v * 4.0) / Math.log1p(maxV * 4.0);
+        else if (chartMetric === "pm25") frac = v <= 0.5 ? 0.0 : Math.log1p(v * 0.25) / Math.log1p(maxV * 0.25);
+        else if (chartMetric === "precip") frac = v <= 0.02 ? 0.0 : Math.sqrt(v / maxV);
+        else frac = v / maxV;
         el.style.height = `${Math.max(6, Math.round(frac * 100))}%`;
         histBars.appendChild(el);
         return el;
@@ -635,28 +824,34 @@ async function boot() {
       if (m === 0) {
         legendBody.innerHTML = `
           <div class="legend-title">Atmosphère &amp; manteau neigeux</div>
-          <div><span style="color:#f59e0b">■ Fumée</span> (ambre bas en vallée) · <span style="color:#e2e8f0">■ Nuages</span> (blanc/gris en altitude) · <span style="color:#5cc8ff">— Pluie/neige</span></div>
+          <div><span style="color:#eab308">■ Fumée</span> (voile vallée) · <span style="color:#e2e8f0">■ Nuages</span> (altitude + ombres) · <span style="color:#5cc8ff">— Pluie/neige</span></div>
         `;
       } else if (m === 1) {
+        legendBody.innerHTML = `
+          <div class="legend-title">Forçage radiatif instantané RF (W m⁻²)</div>
+          <div class="legend-bar" style="background:linear-gradient(90deg,#120d31,#5f156e,#cc3e3b,#f78c1e,#fcf080)"></div>
+          <div class="legend-scale"><span>0</span><span>25</span><span>52+ W m⁻²</span></div>
+        `;
+      } else if (m === 2) {
         legendBody.innerHTML = `
           <div class="legend-title">Dépôt cumulé EC + OM (mg m⁻²)</div>
           <div class="legend-bar" style="background:linear-gradient(90deg,#14243d,#423d70,#bf4d2e,#f5a324,#fceb99)"></div>
           <div class="legend-scale"><span>0</span><span>${fmtFr(totDep * 0.5, 0)}</span><span>${fmtFr(totDep, 1)} mg m⁻²</span></div>
         `;
-      } else if (m === 2) {
+      } else if (m === 3) {
         legendBody.innerHTML = `
           <div class="legend-title">Surface glaciaire (NDSI + albédo)</div>
           <div class="legend-grid">
             <span class="legend-chip"><i style="background:#d6e3f2"></i>Neige / névé</span>
             <span class="legend-chip"><i style="background:#4f9ad8"></i>Glace vive</span>
-            <span class="legend-chip"><i style="background:#1fadad"></i>Lac proglaciaire</span>
+            <span class="legend-chip"><i style="background:#1fadad"></i>Lac Sunwapta</span>
             <span class="legend-chip"><i style="background:#665c50"></i>Roche / moraine</span>
           </div>
         `;
       } else {
         legendBody.innerHTML = `
           <div class="legend-title">Maquette géomorphologique</div>
-          <div>Relief pur Copernicus GLO-30 (1 867 – 3 494 m) avec cycle solaire réel sur 8 jours.</div>
+          <div>Relief Copernicus GLO-30 (1 867 – 3 494 m) + couronne Rocheuses 35 km.</div>
         `;
       }
     }
@@ -670,7 +865,7 @@ async function boot() {
       valLabCloud.textContent = `${Math.round(s.cloud * 100)} %`;
       slLabPrecip.value = s.precip.toFixed(1);
       valLabPrecip.textContent = `${fmtFr(s.precip, 1)} mm/h`;
-      slLabTemp.value = Math.max(-4, Math.min(16, s.ta)).toFixed(1);
+      slLabTemp.value = Math.max(-6, Math.min(18, s.ta)).toFixed(1);
       valLabTemp.textContent = `${fmtFr(s.ta, 1)} °C`;
       slLabWind.value = Math.max(0.5, Math.min(16, s.u)).toFixed(1);
       valLabWind.textContent = `${fmtFr(s.u, 1)} m/s`;
@@ -705,11 +900,11 @@ async function boot() {
           s.snowPackMm = Math.max(base.snowPackMm, s.precip * 5.5 * snowFrac);
           s.snowLineM = Math.max(1840, Math.min(s.snowLineM, s.rainSnowM - 50));
         }
+        s.rf = Math.max(0, -s.deltaAlpha * s.sw);
       } else {
         syncSlidersToState(s);
       }
 
-      // Compute real solar transmission & masking % relative to Athabasca clear-sky curve
       const swClear = swClearSkyWm2(s.hour, s.date);
       const isDay = swClear >= 35.0;
       const sunTrans = isDay ? Math.max(0.05, Math.min(1.0, s.sw / swClear)) : 0.05;
@@ -718,6 +913,7 @@ async function boot() {
       glacier.setMeteorology({
         hour: s.hour,
         depCumFrac: s.depCumFrac,
+        rfWm2: s.rf,
         plumeDensity: s.plume,
         cloudCover: s.cloud,
         cloudLow: s.clLow,
@@ -736,12 +932,14 @@ async function boot() {
         totalDepMgM2: ep.totalDepMgM2 || ep.dailyDepMgM2 || 30,
       });
 
+      const isClean = glacier.state.compareClean;
       timeSlider.value = s.t.toFixed(2);
       clockDate.textContent = s.dayLabel;
       clockTime.textContent = formatHour(s.hour);
       clockPhase.textContent = describePhase(currentEpId, s, labActive);
+      presentClock.textContent = `${s.dayLabel} · ${formatHour(s.hour)} MDT`;
+      presentMeta.textContent = isClean ? "Référence propre" : `RF +${fmtFr(s.rf, 1)} W m⁻² · ${fmtFr(s.ta, 1)} °C`;
 
-      const isClean = glacier.state.compareClean;
       if (!isDay) {
         kpiSwLw.textContent = `Nuit · LW ${Math.round(s.lw)}`;
         sunDot.style.backgroundColor = "#475569";
@@ -763,34 +961,34 @@ async function boot() {
         sunDot.style.opacity = String(Math.max(0.35, 0.35 + 0.65 * sunTrans));
       }
 
-      if (labActive) {
-        kpiSmoke.textContent = `Manuel · ${Math.round(s.plume * 100)} %`;
-      } else if (ep.isLive) {
-        kpiSmoke.textContent = `Nuages ${Math.round(s.cloud * 100)} %`;
-      } else if (s.pm25 === null) {
-        kpiSmoke.textContent = `Illust. · ${Math.round(s.plume * 100)} %`;
-      } else if (s.pm25 < 1.5 && (s.daod ?? 0) < 0.02) {
-        kpiSmoke.textContent = `Air pur · ${fmtFr(s.pm25, 1)}`;
-      } else {
+      if (labActive) kpiSmoke.textContent = `Manuel · ${Math.round(s.plume * 100)} %`;
+      else if (ep.isLive) kpiSmoke.textContent = `Nuages ${Math.round(s.cloud * 100)} %`;
+      else if (s.pm25 === null) kpiSmoke.textContent = `Illust. · ${Math.round(s.plume * 100)} %`;
+      else if (s.pm25 < 1.5 && (s.daod ?? 0) < 0.02) kpiSmoke.textContent = `Air pur · ${fmtFr(s.pm25, 1)}`;
+      else {
         const aodStr = s.daod && s.daod >= 0.03 ? ` · ${fmtFr(s.daod, 2)}` : "";
         kpiSmoke.textContent = `${fmtFr(s.pm25, s.pm25 >= 10 ? 0 : 1)} µg/m³${aodStr}`;
       }
+
       kpiTempIso.textContent = `${fmtFr(s.ta, 1)} °C · ${Math.round(s.rainSnowM)} m`;
-      if (s.precip < 0.05) {
-        kpiPrecip.textContent = "Sec · 0,0 mm/h";
-      } else if (s.rainSnowM <= 2120) {
-        kpiPrecip.textContent = `Neige · ${fmtFr(s.precip, 1)} mm/h`;
-      } else if (s.rainSnowM >= 3460) {
-        kpiPrecip.textContent = `Pluie · ${fmtFr(s.precip, 1)} mm/h`;
-      } else {
-        kpiPrecip.textContent = `Mixte · ${fmtFr(s.precip, 1)} mm/h`;
-      }
+      if (s.precip < 0.05) kpiPrecip.textContent = "Sec · 0,0 mm/h";
+      else if (s.rainSnowM <= 2120) kpiPrecip.textContent = `Neige · ${fmtFr(s.precip, 1)} mm/h`;
+      else if (s.rainSnowM >= 3460) kpiPrecip.textContent = `Pluie · ${fmtFr(s.precip, 1)} mm/h`;
+      else kpiPrecip.textContent = `Mixte · ${fmtFr(s.precip, 1)} mm/h`;
+
       kpiSnowPack.textContent = isClean ? "0,0 mm" : `${fmtFr(s.snowPackMm, 1)} mm éq.`;
       if (isClean || ep.isLive) {
         kpiDep.textContent = ep.isLive ? "Météo live (0 feu)" : "0,0 mg m⁻²";
       } else {
         const modeTag = s.depRate < 0.02 ? "0/h" : `+${fmtFr(s.depRate, s.depRate >= 10 ? 0 : 1)} ${s.wetFrac >= 0.5 ? "hum" : "sec"}`;
         kpiDep.textContent = `${fmtFr(s.depCum, s.depCum >= 100 ? 0 : 1)} mg (${modeTag})`;
+      }
+
+      // Live RF + Extra Melt + Altitudinal Profile Canvas
+      valRfNow.textContent = isClean ? "+0,0 W m⁻²" : `+${fmtFr(s.rf, 1)} W m⁻²`;
+      valExtraMelt.textContent = isClean ? "+0,0 mm éq." : `+${fmtFr(s.extraMeltMm, 1)} mm éq.`;
+      if (profileVisible) {
+        drawAltitudinalProfile(profileCtx, profileCanvas.width, profileCanvas.height, s, isClean, meta.awsElevM || 2180, meta.lapseCPerKm || 6.5);
       }
 
       const curBin = Math.floor(s.t / histBinHours);
@@ -822,10 +1020,7 @@ async function boot() {
       btnSpeed.textContent = `${String(speeds[speedIdx]).replace(".", ",")}×`;
     });
 
-    timeSlider.addEventListener("input", () => {
-      currentT = parseFloat(timeSlider.value);
-      syncTimeUI();
-    });
+    timeSlider.addEventListener("input", () => { currentT = parseFloat(timeSlider.value); syncTimeUI(); });
 
     document.querySelectorAll(".ctab").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -840,19 +1035,22 @@ async function boot() {
       currentEpId = nextId;
       labActive = false;
       btnSyncAws.classList.add("hidden");
-      document.querySelectorAll(".ep-btn").forEach((b) => {
+      epMenu.classList.add("hidden");
+      epTrigger.setAttribute("aria-expanded", "false");
+      document.querySelectorAll(".ep-item").forEach((b) => {
         const on = b.dataset.episode === currentEpId;
         b.classList.toggle("active", on);
         b.setAttribute("aria-selected", on ? "true" : "false");
       });
       currentT = startT != null ? startT : (EP_START_T[currentEpId] ?? 12.0);
+      lastCamKey = "";
       rebuildTimelineChrome();
       updateLegend();
       syncTimeUI();
       setPlaying(nextId !== "live-now");
     }
 
-    document.querySelectorAll(".ep-btn").forEach((btn) => {
+    document.querySelectorAll(".ep-item").forEach((btn) => {
       btn.addEventListener("click", async () => {
         const nextId = btn.dataset.episode;
         if (nextId === "live-now") {
@@ -862,6 +1060,7 @@ async function boot() {
             meta.episodes["live-now"] = episode;
             const curH = episode.hours[nowIdx];
             liveTag.textContent = `${fmtFr(curH.ta, 0)} °C · ${Math.round(curH.cloud * 100)} %`;
+            EP_META_UI["live-now"].sub = `${fmtFr(curH.ta, 0)} °C · nuages ${Math.round(curH.cloud * 100)} %`;
             activateEpisode("live-now", nowIdx);
           } catch (e) {
             console.error("Live weather fetch failed:", e);
@@ -901,6 +1100,7 @@ async function boot() {
       if (e.target.tagName === "INPUT") return;
       if (e.code === "Space") { e.preventDefault(); setPlaying(!playing); }
       if (e.key === "b" || e.key === "B") setClean(true);
+      if (e.key === "h" || e.key === "H") setPresentationMode(!presentMode);
     });
     window.addEventListener("keyup", (e) => { if (e.key === "b" || e.key === "B") setClean(false); });
 
@@ -923,13 +1123,14 @@ async function boot() {
     });
 
     const modeBtns = document.querySelectorAll(".mode-btn");
-    modeBtns.forEach((btn) => {
-      btn.addEventListener("click", () => {
-        modeBtns.forEach((b) => b.classList.remove("active"));
-        btn.classList.add("active");
-        glacier.setMode(Number(btn.dataset.mode));
-        updateLegend();
-      });
+    function setSurfaceMode(modeNum) {
+      modeBtns.forEach((b) => b.classList.toggle("active", Number(b.dataset.mode) === modeNum));
+      glacier.setMode(modeNum);
+      updateLegend();
+    }
+    modeBtns.forEach((btn) => btn.addEventListener("click", () => setSurfaceMode(Number(btn.dataset.mode))));
+    document.getElementById("btnQuickRfMode").addEventListener("click", () => {
+      setSurfaceMode(glacier.state.mode === 1 ? 0 : 1);
     });
 
     const slExag = document.getElementById("slExag"), valExag = document.getElementById("valExag");
@@ -937,6 +1138,7 @@ async function boot() {
     const slBoost = document.getElementById("slBoost"), valBoost = document.getElementById("valBoost");
     slBoost.addEventListener("input", () => { const v = parseFloat(slBoost.value); valBoost.textContent = `${fmtFr(v, 1)}×`; glacier.setBoost(v); });
 
+    document.getElementById("chkHorizon").addEventListener("change", (e) => glacier.setShowHorizon(e.target.checked));
     document.getElementById("chkClouds").addEventListener("change", (e) => glacier.setShowClouds(e.target.checked));
     document.getElementById("chkSmoke").addEventListener("change", (e) => glacier.setShowSmoke(e.target.checked));
     document.getElementById("chkPrecip").addEventListener("change", (e) => glacier.setShowPrecip(e.target.checked));
@@ -953,9 +1155,11 @@ async function boot() {
     document.getElementById("btnReset").addEventListener("click", () => {
       labActive = false; btnSyncAws.classList.add("hidden");
       glacier.flyTo("block");
+      presetBtns.forEach((b) => b.classList.toggle("active", b.dataset.preset === "block"));
       slExag.value = "1.30"; valExag.textContent = "1,30×"; glacier.setExaggeration(1.30);
       slBoost.value = "1.4"; valBoost.textContent = "1,4×"; glacier.setBoost(1.4);
       glacier.state.spin = false; document.getElementById("chkSpin").checked = false;
+      setSurfaceMode(0);
       syncTimeUI();
     });
 
@@ -963,7 +1167,7 @@ async function boot() {
       const ep = meta.episodes[currentEpId];
       const s = sampleSequenceAtStep(ep, currentT);
       const a = document.createElement("a");
-      a.download = `athabasca_3d_${s.date}_${formatHour(s.hour).replace(":", "h")}.png`;
+      a.download = `athabasca_3d_v2_${s.date}_${formatHour(s.hour).replace(":", "h")}.png`;
       a.href = glacier.capturePNG();
       a.click();
     });
@@ -998,10 +1202,10 @@ async function boot() {
       const deg = glacier.getNorthAngleDeg();
       compassSvg.style.transform = `rotate(${deg.toFixed(1)}deg)`;
       const rad = (deg * Math.PI) / 180;
-      compassN.style.left = `${(19 + 13 * Math.sin(rad) - 4).toFixed(1)}px`;
-      compassN.style.top = `${(19 - 13 * Math.cos(rad) - 6).toFixed(1)}px`;
+      compassN.style.left = `${(18 + 12 * Math.sin(rad) - 4).toFixed(1)}px`;
+      compassN.style.top = `${(18 - 12 * Math.cos(rad) - 6).toFixed(1)}px`;
 
-      if (showLabels) {
+      if (showLabels && !presentMode) {
         for (let i = 0; i < pins.length; i++) {
           const { el, lm } = pins[i];
           const p = glacier.projectLandmark(lm);
@@ -1017,7 +1221,7 @@ async function boot() {
     }
     requestAnimationFrame(animate);
   } catch (err) {
-    console.error("Athabasca 3D boot error:", err);
+    console.error("Athabasca 3D v2 boot error:", err);
     loaderSub.textContent = "Erreur d'initialisation : " + (err?.message || String(err));
   }
 }

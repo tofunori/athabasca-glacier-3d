@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Athabasca 3D · Simulation multi-jours (fumée, pluie, neige, solaire)</title>
-  <meta name="description" content="Simulation 3D multi-jours du glacier Athabasca sur 8 jours continus (192 h AWS réelles) : fumée volumétrique de feux, pluie et neige selon l'isotherme de Jennings, ciel solaire et manteau neigeux." />
+  <title>Athabasca 3D v2 · Fumée radiative, nuages, forçage RF &amp; webcam</title>
+  <meta name="description" content="Observatoire 3D v2 du glacier Athabasca : transfert radiatif de fumée, ombres de nuages, horizon Rocheuses 35 km, forçage radiatif RF (W m⁻²), profil altitudinal en direct et webcam Skaping synchronisée." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -18,78 +18,125 @@
     <div id="loader" class="loader">
       <div class="loader-card">
         <div class="loader-ring"></div>
-        <div class="loader-title">Glacier Athabasca · 3D</div>
-        <div id="loaderSub" class="loader-sub">Chargement du MNE Copernicus GLO-30 et des 192 h AWS…</div>
+        <div class="loader-title">Glacier Athabasca · 3D <span class="v2-badge">v2</span></div>
+        <div id="loaderSub" class="loader-sub">Chargement du relief 35 km (Copernicus GLO-30) et des séries NAS…</div>
       </div>
     </div>
 
-    <!-- Top-Left Brand & Sequence Selector -->
-    <header class="hud-top-left">
-      <div class="brand-row">
-        <div class="brand-mark" aria-hidden="true"></div>
-        <div>
-          <h1 class="brand-title">Athabasca 3D</h1>
-          <p class="brand-sub">Simulation multi-jours · Fumée, pluie, neige &amp; solaire</p>
-        </div>
-        <button id="btnInfo" class="icon-btn" title="Données, physique et provenance" aria-label="Données et physique">i</button>
-      </div>
+    <!-- Minimal Presentation Mode HUD Pill (only visible when H / Presentation mode is active) -->
+    <div id="presentBar" class="present-bar hidden">
+      <span id="presentClock" class="present-clock">18 août · 12:30</span>
+      <span id="presentMeta" class="present-meta">RF +0 W m⁻²</span>
+      <button id="btnExitPresent" class="present-exit" title="Afficher l'interface (touche H)">Interface (H)</button>
+    </div>
 
-      <div class="episode-bar" role="tablist" aria-label="Séquence météorologique">
-        <button class="ep-btn active" data-episode="2023-08-17_24" role="tab" aria-selected="true">
-          <span class="ep-dot amber"></span>
-          <span>Août 2023</span>
-          <span class="ep-tag">17–24 · NAS</span>
-        </button>
-        <button class="ep-btn" data-episode="2023-06-11_18" role="tab" aria-selected="false">
-          <span class="ep-dot hot"></span>
-          <span>Juin 2023</span>
-          <span class="ep-tag">11–18 · Neige</span>
-        </button>
-        <button class="ep-btn" data-episode="2023-08-26_0902" role="tab" aria-selected="false">
-          <span class="ep-dot amber"></span>
-          <span>Fin août 2023</span>
-          <span class="ep-tag">26–2 sept.</span>
-        </button>
-        <button class="ep-btn" data-episode="2021-08-12_19" role="tab" aria-selected="false">
-          <span class="ep-dot amber"></span>
-          <span>Août 2021</span>
-          <span class="ep-tag">12–19 · Sec</span>
-        </button>
-        <button class="ep-btn" data-episode="2024-07-22_29" role="tab" aria-selected="false">
-          <span class="ep-dot hot"></span>
-          <span>Juil. 2024</span>
-          <span class="ep-tag">Jasper · ERA5</span>
-        </button>
-        <button class="ep-btn" data-episode="2018-08-21_28" role="tab" aria-selected="false">
-          <span class="ep-dot"></span>
-          <span>Août 2018</span>
-          <span class="ep-tag">AWS + NAS</span>
-        </button>
-        <button class="ep-btn live-btn" id="btnLiveWeather" data-episode="live-now" role="tab" aria-selected="false" title="Charger la vraie météo actuelle (nuages 3 niveaux, pluie/neige, vent, solaire) sur le glacier Athabasca">
-          <span class="ep-dot live"></span>
-          <span>En direct</span>
-          <span class="ep-tag" id="liveTag">Météo réelle</span>
-        </button>
+    <!-- Top-Left Clean Brand + Compact Episode Dropdown Selector (leaves sky & sun 100% unobstructed!) -->
+    <header class="hud-top-left hud-el">
+      <div class="top-left-strip">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true"></div>
+          <div>
+            <h1 class="brand-title">Athabasca 3D <span class="v2-pill">v2</span></h1>
+            <p class="brand-sub">Observatoire glaciaire · NAS &amp; Skaping</p>
+          </div>
+          <button id="btnInfo" class="icon-btn" title="Données, physique et provenance" aria-label="Données et physique">i</button>
+        </div>
+
+        <!-- Compact Episode Dropdown -->
+        <div class="ep-dropdown" id="epDropdown">
+          <button id="epTrigger" class="ep-trigger" aria-expanded="false" aria-haspopup="listbox">
+            <span id="epTriggerDot" class="ep-dot amber"></span>
+            <span class="ep-trigger-text">
+              <strong id="epTriggerTitle">Août 2023 · 17–24</strong>
+              <small id="epTriggerSub">198,6 mg m⁻² · NAS exact</small>
+            </span>
+            <span class="ep-caret" aria-hidden="true">▾</span>
+          </button>
+
+          <div id="epMenu" class="ep-menu hidden" role="listbox" aria-label="Choisir une séquence">
+            <button class="ep-item active" data-episode="2023-08-17_24" role="option" aria-selected="true">
+              <span class="ep-dot amber"></span>
+              <span class="ep-item-body">
+                <strong>17–24 août 2023 <em class="tag-pill">NAS + Webcam</em></strong>
+                <small>Orage 18 août (141 mg m⁻²) → 19 août pur → retour fumée 20–23</small>
+              </span>
+            </button>
+            <button class="ep-item" data-episode="2023-06-11_18" role="option" aria-selected="false">
+              <span class="ep-dot hot"></span>
+              <span class="ep-item-body">
+                <strong>11–18 juin 2023 <em class="tag-pill">PM2,5 375 + Blizzard</em></strong>
+                <small>Panache extrême 12 juin → lessivage neigeux 15 → tempête 18 juin</small>
+              </span>
+            </button>
+            <button class="ep-item" data-episode="2023-08-26_0902" role="option" aria-selected="false">
+              <span class="ep-dot amber"></span>
+              <span class="ep-item-body">
+                <strong>26 août – 2 sept. 2023 <em class="tag-pill">NAS + Webcam</em></strong>
+                <small>Chaleur sèche (18,7 °C) puis lessivage pluvieux 30–31 août (76 mg m⁻²)</small>
+              </span>
+            </button>
+            <button class="ep-item" data-episode="2021-08-12_19" role="option" aria-selected="false">
+              <span class="ep-dot amber"></span>
+              <span class="ep-item-body">
+                <strong>12–19 août 2021 <em class="tag-pill">Record sec 2021</em></strong>
+                <small>Dépôt sec extrême 14–15 août (ΔAOD 1,33) puis neige du 17 août</small>
+              </span>
+            </button>
+            <button class="ep-item" data-episode="2024-07-22_29" role="option" aria-selected="false">
+              <span class="ep-dot hot"></span>
+              <span class="ep-item-body">
+                <strong>22–29 juil. 2024 · Jasper <em class="tag-pill">ERA5 + Webcam</em></strong>
+                <small>Météo ERA5 réelle + panache illustratif + 144 photos Skaping</small>
+              </span>
+            </button>
+            <button class="ep-item" data-episode="2018-08-21_28" role="option" aria-selected="false">
+              <span class="ep-dot"></span>
+              <span class="ep-item-body">
+                <strong>21–28 août 2018 <em class="tag-pill">AWS réelle + NAS</em></strong>
+                <small>192 h station sur la glace + RAQDPS exact (143,9 mg m⁻²)</small>
+              </span>
+            </button>
+            <div class="ep-sep"></div>
+            <button class="ep-item live-item" id="btnLiveWeather" data-episode="live-now" role="option" aria-selected="false">
+              <span class="ep-dot live"></span>
+              <span class="ep-item-body">
+                <strong>En direct · Athabasca <em class="tag-pill live" id="liveTag">Météo réelle</em></strong>
+                <small>Open-Meteo temps réel (hier → demain) : nuages 3 étages, pluie/neige, vent</small>
+              </span>
+            </button>
+          </div>
+        </div>
       </div>
     </header>
 
-    <!-- Top-Right Navigation & Settings Toggle -->
-    <nav class="hud-top-right" aria-label="Caméra et météo">
+    <!-- Top-Right Navigation, Scientific Panels & Presentation/Video Controls -->
+    <nav class="hud-top-right hud-el" aria-label="Caméra, outils et présentation">
       <div class="preset-group">
         <button class="pill-btn active" data-preset="block">Bloc 3D</button>
-        <button class="pill-btn immersion-pill" data-preset="webcam" title="Placer la caméra 3D exactement à l'emplacement GPS de la webcam Skaping (52,2203° N, 117,2247° O)">Vue Webcam</button>
-        <button class="pill-btn immersion-pill" data-preset="onglacier" title="Se placer directement sur la langue du glacier (station AWS)">Sur le glacier</button>
+        <button class="pill-btn immersion-pill" data-preset="webcam" title="Placer la caméra 3D exactement à l'emplacement GPS de la webcam Skaping">Vue Webcam</button>
+        <button class="pill-btn immersion-pill" data-preset="onglacier" title="Se placer sur la langue du glacier (2 180 m, station AWS)">Sur le glacier</button>
         <button class="pill-btn" data-preset="flyover">Survol</button>
-        <button class="pill-btn" data-preset="plateau">Plateau</button>
         <button class="pill-btn" data-preset="top">Carte</button>
       </div>
 
-      <button id="btnWebcamToggle" class="pill-btn accent-outline active-cam" aria-pressed="true" title="Afficher ou masquer la photo réelle de la webcam Columbia Icefield synchronisée à l'heure">
-        Webcam réelle
+      <button id="btnProfileToggle" class="pill-btn accent-outline active-cam" aria-pressed="true" title="Profil altitudinal, forçage radiatif RF et fonte supplémentaire">
+        Profil RF
+      </button>
+
+      <button id="btnWebcamToggle" class="pill-btn accent-outline active-cam" aria-pressed="true" title="Afficher ou masquer la webcam Skaping synchronisée">
+        Webcam
+      </button>
+
+      <button id="btnRecTop" class="pill-btn accent-outline rec-btn" title="Enregistrer un clip vidéo 3D propre (sans interface, prêt pour PowerPoint/Keynote)">
+        <span class="rec-dot"></span><span id="recLabel">Clip</span>
+      </button>
+
+      <button id="btnPresent" class="pill-btn accent-outline" title="Mode Présentation plein écran (touche H)">
+        H
       </button>
 
       <button id="btnSettings" class="pill-btn accent-outline" aria-expanded="false">
-        Météo &amp; couches
+        Couches
       </button>
 
       <div class="compass" title="Orientation Nord (cliquer pour réinitialiser la vue)" id="compassWrap">
@@ -102,32 +149,57 @@
       </div>
     </nav>
 
+    <!-- Left Live Scientific Panel: Altitudinal Profile + Radiative Forcing (RF) & Extra Melt -->
+    <aside id="profileCard" class="profile-card hud-el" aria-label="Profil altitudinal et forçage radiatif">
+      <div class="profile-head">
+        <span class="profile-title">Profil altitudinal &amp; RF</span>
+        <button id="btnQuickRfMode" class="wc-match-btn" title="Basculer la carte 3D sur le forçage radiatif RF (W m⁻²)">Carte RF</button>
+      </div>
+      <div class="rf-metrics">
+        <div class="rf-box">
+          <span class="rf-lbl">Forçage RF (−Δα·SW↓)</span>
+          <strong id="valRfNow" class="rf-val hot">+0,0 W m⁻²</strong>
+        </div>
+        <div class="rf-box" title="Proxy énergétique cumulé : Σ max(0, RF) × 3600 / Lf (Lf = 334 kJ kg⁻¹, si Ta > −2 °C)">
+          <span class="rf-lbl">Fonte + (proxy suie)</span>
+          <strong id="valExtraMelt" class="rf-val cyan">+0,0 mm éq.</strong>
+        </div>
+      </div>
+      <canvas id="profileCanvas" class="profile-canvas" width="244" height="162"></canvas>
+      <div class="profile-foot">
+        <span><i class="swatch temp"></i>T(z)</span>
+        <span><i class="swatch iso"></i>Iso. pluie/neige</span>
+        <span><i class="swatch rf"></i>RF (W m⁻²)</span>
+      </div>
+    </aside>
+
     <!-- Collapsible Right Settings & Live Weather Lab Drawer -->
-    <aside id="settingsDrawer" class="drawer hidden" aria-label="Réglages 3D et laboratoire météo">
+    <aside id="settingsDrawer" class="drawer hidden hud-el" aria-label="Réglages 3D et laboratoire météo">
       <div class="drawer-section">
         <div class="section-label">Couche de surface</div>
         <div class="mode-grid" id="modeGrid">
           <button class="mode-btn active" data-mode="0">Satellite + météo</button>
-          <button class="mode-btn" data-mode="1">Dépôt (mg m⁻²)</button>
-          <button class="mode-btn" data-mode="2">Glace / Neige</button>
-          <button class="mode-btn" data-mode="3">Maquette relief</button>
+          <button class="mode-btn rf-mode-btn" data-mode="1">Forçage RF (W m⁻²)</button>
+          <button class="mode-btn" data-mode="2">Dépôt (mg m⁻²)</button>
+          <button class="mode-btn" data-mode="3">Glace / Neige</button>
+          <button class="mode-btn" data-mode="4">Maquette relief</button>
         </div>
       </div>
 
       <div class="drawer-section">
         <div class="section-head-row">
           <span class="section-label">Forçages météo en direct</span>
-          <button id="btnSyncAws" class="mini-link hidden">Revenir aux données AWS</button>
+          <button id="btnSyncAws" class="mini-link hidden">Revenir aux données</button>
         </div>
 
         <label class="slider-row">
-          <span class="slider-head"><span>Densité de fumée</span><strong id="valLabSmoke">50 %</strong></span>
-          <input id="slLabSmoke" type="range" min="0" max="100" step="2" value="50" />
+          <span class="slider-head"><span>Densité de fumée (optique)</span><strong id="valLabSmoke">35 %</strong></span>
+          <input id="slLabSmoke" type="range" min="0" max="100" step="2" value="35" />
         </label>
 
         <label class="slider-row">
           <span class="slider-head"><span>Rayonnement solaire SW↓</span><strong id="valLabSw">350 W m⁻²</strong></span>
-          <input id="slLabSw" type="range" min="0" max="800" step="10" value="350" />
+          <input id="slLabSw" type="range" min="0" max="850" step="10" value="350" />
         </label>
 
         <label class="slider-row">
@@ -142,7 +214,7 @@
 
         <label class="slider-row">
           <span class="slider-head"><span>Température AWS (isotherme)</span><strong id="valLabTemp">3,5 °C</strong></span>
-          <input id="slLabTemp" type="range" min="-4.0" max="16.0" step="0.2" value="3.5" />
+          <input id="slLabTemp" type="range" min="-6.0" max="18.0" step="0.2" value="3.5" />
         </label>
 
         <label class="slider-row">
@@ -165,11 +237,15 @@
         </label>
 
         <label class="toggle-row">
-          <span>Nuages 3D réels (bas / moy. / haut)</span>
+          <span>Horizon Rocheuses 35 km (en Bloc 3D)</span>
+          <input id="chkHorizon" type="checkbox" />
+        </label>
+        <label class="toggle-row">
+          <span>Nuages 3D + ombres projetées</span>
           <input id="chkClouds" type="checkbox" checked />
         </label>
         <label class="toggle-row">
-          <span>Fumée volumétrique 3D</span>
+          <span>Fumée radiative de vallée</span>
           <input id="chkSmoke" type="checkbox" checked />
         </label>
         <label class="toggle-row">
@@ -185,7 +261,7 @@
           <input id="chkIsotherm" type="checkbox" checked />
         </label>
         <label class="toggle-row">
-          <span>Ombres portées réelles</span>
+          <span>Ombres portées du relief</span>
           <input id="chkShadows" type="checkbox" checked />
         </label>
         <label class="toggle-row">
@@ -209,7 +285,7 @@
     </aside>
 
     <!-- Synchronized Real Columbia Icefield Skaping Webcam Card (Draggable & Resizable PiP) -->
-    <aside id="webcamCard" class="webcam-card" aria-label="Webcam réelle Columbia Icefield synchronisée">
+    <aside id="webcamCard" class="webcam-card hud-el" aria-label="Webcam réelle Columbia Icefield synchronisée">
       <div id="webcamDragHandle" class="webcam-head" title="Glisser pour déplacer la fenêtre (double-clic pour réinitialiser)">
         <div class="webcam-title-wrap">
           <span class="webcam-grip" aria-hidden="true">⋮⋮</span>
@@ -251,12 +327,12 @@
     </div>
 
     <!-- Bottom Floating Legend -->
-    <div id="legendCard" class="legend-card">
+    <div id="legendCard" class="legend-card hud-el">
       <div id="legendBody"></div>
     </div>
 
     <!-- Bottom Center Multi-Day Timeline Dock -->
-    <section class="timeline-dock" aria-label="Simulation multi-jours horaire">
+    <section class="timeline-dock hud-el" aria-label="Simulation multi-jours horaire">
       <div class="dock-top">
         <div class="play-controls">
           <button id="btnPlay" class="play-btn" title="Lecture / Pause (Espace)" aria-label="Lecture ou pause">
@@ -270,9 +346,9 @@
           </button>
           <button id="btnSpeed" class="speed-btn" title="Vitesse (0,5× immersif → 4× time-lapse)">0,5×</button>
           <div class="clock-block">
-            <span id="clockDate" class="clock-date">26 août</span>
-            <span id="clockTime" class="clock-time">13:00</span>
-            <span id="clockPhase" class="clock-phase">Panache dense · front pluie/neige</span>
+            <span id="clockDate" class="clock-date">18 août</span>
+            <span id="clockTime" class="clock-time">12:30</span>
+            <span id="clockPhase" class="clock-phase">—</span>
           </div>
         </div>
 
@@ -280,6 +356,7 @@
           <div class="chart-tabs" id="chartTabs" role="tablist" aria-label="Variable du graphique">
             <button class="ctab active" data-metric="precip">Pluie/Neige</button>
             <button class="ctab" data-metric="depRate">Dépôt</button>
+            <button class="ctab" data-metric="rf">RF</button>
             <button class="ctab" data-metric="pm25">PM2,5</button>
             <button class="ctab" data-metric="sw">SW↓</button>
             <button class="ctab" data-metric="ta">Temp.</button>
@@ -296,7 +373,7 @@
       <!-- Multi-Day Scrubber with Hourly Histogram -->
       <div class="scrubber-wrap">
         <div id="histBars" class="hist-bars" aria-hidden="true"></div>
-        <input id="timeSlider" class="time-slider" type="range" min="0" max="191" step="0.05" value="133.0" aria-label="Progression horaire multi-jours" />
+        <input id="timeSlider" class="time-slider" type="range" min="0" max="191" step="0.05" value="36.5" aria-label="Progression horaire multi-jours" />
       </div>
 
       <!-- Complete Live Hourly Telemetry Strip -->
@@ -332,15 +409,15 @@
     <div id="infoModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="infoTitle">
       <div class="modal-card">
         <div class="modal-head">
-          <h2 id="infoTitle">Simulation multi-jours, physique et provenance</h2>
+          <h2 id="infoTitle">Athabasca 3D v2 — Physique, données et provenance</h2>
           <button id="btnCloseInfo" class="icon-btn" aria-label="Fermer">×</button>
         </div>
         <div class="modal-body">
-          <p><strong>Glacier Athabasca</strong> (<code>RGI2000-v7.0-G-02-12982</code>, 16,15 km², 1 965 – 3 456 m, 66 pixels MODIS), champ de glace Columbia, Rocheuses canadiennes (<code>02-03</code>).</p>
+          <p><strong>Glacier Athabasca</strong> (<code>RGI2000-v7.0-G-02-12982</code>, 16,15 km², 1 965 – 3 456 m, 66 pixels MODIS) entouré d'une couronne Copernicus GLO-30 de <strong>35 × 35 km</strong> dans les Rocheuses canadiennes (<code>02-03</code>).</p>
           <ul>
-            <li><strong>Données horaires exactes RAQDPS (NAS, 2018 · 2021 · 2023)</strong> : extraites directement des archives NetCDF <code>FireWork − noFire</code> (<code>DEC + WEC + DPOM + DSOM + WPOM + WSOM</code>, sec + humide <code>D002</code>, masses molaires 12,011 et 132,1342 g mol⁻¹), <code>AF_WILDFIRE</code> (PM2,5), <code>ΔAOD580</code>, <code>PR</code> et <code>SN</code> par poids IDW 3×3 canoniques (parité DuckDB ≤ 8×10⁻¹⁶), converties en heure locale d'Alberta (<code>MDT = UTC−6</code>).</li>
-            <li><strong>Météo horaire locale</strong> : station AWS réelle sur la langue du glacier en août 2018 (<code>Ta, HR, U, SW↓, LW↓</code>) ; réanalyse ERA5 horaire (2 180 m) pour 2021, 2023 et 2024. L'épisode <em>Juil. 2024 (Jasper)</em> utilise ERA5 réel et un panache illustratif (hors archive RAQDPS 2002–2023).</li>
-            <li><strong>Immersion « Sur le glacier » &amp; neige multi-jours</strong> : caméra à l'altitude de la station AWS (~2 180 m), pluie sous l'isotherme de Jennings et neige tourbillonnante au-dessus, manteau neigeux frais sensible à la pente qui enfouit la suie puis fond au soleil.</li>
+            <li><strong>Fumée radiative analytique</strong> : intégration exacte Beer-Lambert d'un profil exponentiel piégé en vallée + diffusion Mie de Henyey-Greenstein vers le soleil, sans couches superposées artificielles.</li>
+            <li><strong>Forçage radiatif (<code>RF = −Δα × SW↓</code>, W m⁻²) et proxy fonte</strong> : la couche <em>Forçage RF</em> module l'énergie solaire supplémentaire absorbée par la suie selon le cycle solaire horaire, les ombres de nuages et le réinitialisation par neige fraîche ; le compteur <em>Fonte +</em> convertit ce flux via la chaleur latente de fusion (<code>Lf = 334 kJ kg⁻¹</code>, proxy illustratif).</li>
+            <li><strong>Archives horaires exactes NAS (2018 · 2021 · 2023)</strong> : <code>RAQDPS FireWork − noFire</code> (<code>DEC+WEC+DPOM+DSOM+WPOM+WSOM</code>, <code>D002</code>, parité DuckDB ≤ 8×10⁻¹⁶, MDT) + météo ERA5 / AWS 2018 + 720 photos horaires Skaping (Pursuit).</li>
           </ul>
           <p id="modalProvenance" class="modal-note"></p>
         </div>

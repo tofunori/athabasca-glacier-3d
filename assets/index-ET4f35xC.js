@@ -4953,7 +4953,7 @@ void main() {
           vec3 worldPos = center + side * (position.x * streakW) - velDir * (position.y * streakLen);
 
           // Grazing backlight shimmer
-          vAlpha = active * aboveGround * rainZone * distFade * fadeV * uImmersion * clamp(uIntensity * 0.48, 0.0, 0.44);
+          vAlpha = isAct * aboveGround * rainZone * distFade * fadeV * uImmersion * clamp(uIntensity * 0.48, 0.0, 0.44);
           gl_Position = projectionMatrix * viewMatrix * vec4(worldPos, 1.0);
         }
       `,fragmentShader:`
@@ -5049,7 +5049,7 @@ void main() {
 
           float fadeV = smoothstep(0.0, 0.12, t) * (1.0 - smoothstep(0.88, 1.0, t));
           float opacity = isNear > 0.5 ? 0.78 : 0.42;
-          vAlpha = active * scaleGate * aboveGround * inBlock * snowZone * distFade * fadeV * clamp(uIntensity * 0.95, 0.0, 1.0) * opacity;
+          vAlpha = isAct * scaleGate * aboveGround * inBlock * snowZone * distFade * fadeV * clamp(uIntensity * 0.95, 0.0, 1.0) * opacity;
           vVariant = floor(aVariant);
           vRot = uTime * (0.7 + fract(aVariant) * 1.4) + ph1;
 

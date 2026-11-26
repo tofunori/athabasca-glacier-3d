@@ -65,6 +65,11 @@
           <span>Août 2018</span>
           <span class="ep-tag">AWS + NAS</span>
         </button>
+        <button class="ep-btn live-btn" id="btnLiveWeather" data-episode="live-now" role="tab" aria-selected="false" title="Charger la vraie météo actuelle (nuages 3 niveaux, pluie/neige, vent, solaire) sur le glacier Athabasca">
+          <span class="ep-dot live"></span>
+          <span>En direct</span>
+          <span class="ep-tag" id="liveTag">Météo réelle</span>
+        </button>
       </div>
     </header>
 
@@ -121,6 +126,11 @@
         </label>
 
         <label class="slider-row">
+          <span class="slider-head"><span>Couverture nuageuse 3D</span><strong id="valLabCloud">40 %</strong></span>
+          <input id="slLabCloud" type="range" min="0" max="100" step="2" value="40" />
+        </label>
+
+        <label class="slider-row">
           <span class="slider-head"><span>Précipitation (pluie / neige)</span><strong id="valLabPrecip">0,0 mm/h</strong></span>
           <input id="slLabPrecip" type="range" min="0" max="5.0" step="0.1" value="0.0" />
         </label>
@@ -150,12 +160,20 @@
         </label>
 
         <label class="toggle-row">
+          <span>Nuages 3D réels (bas / moy. / haut)</span>
+          <input id="chkClouds" type="checkbox" checked />
+        </label>
+        <label class="toggle-row">
           <span>Fumée volumétrique 3D</span>
           <input id="chkSmoke" type="checkbox" checked />
         </label>
         <label class="toggle-row">
           <span>Pluie &amp; neige réalistes</span>
           <input id="chkPrecip" type="checkbox" checked />
+        </label>
+        <label class="toggle-row">
+          <span>Soleil 3D &amp; trajectoire</span>
+          <input id="chkSunArc" type="checkbox" checked />
         </label>
         <label class="toggle-row">
           <span>Ligne pluie / neige (Jennings)</span>
@@ -237,8 +255,8 @@
       <!-- Complete Live Hourly Telemetry Strip -->
       <div class="kpi-strip">
         <div class="kpi">
-          <span class="kpi-label">Solaire · LW↓</span>
-          <span class="kpi-val solar" id="kpiSwLw">—</span>
+          <span class="kpi-label">Soleil · Masqué</span>
+          <span class="kpi-val solar kpi-sun-row"><i id="sunDot" class="sun-dot"></i><span id="kpiSwLw">—</span></span>
         </div>
         <div class="kpi">
           <span class="kpi-label">Fumée · PM2,5</span>

@@ -95,6 +95,8 @@ html, body, #app {
 .ep-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--rain); }
 .ep-dot.amber { background: var(--amber); }
 .ep-dot.hot { background: #ef4444; }
+.ep-dot.live { background: #22c55e; box-shadow: 0 0 8px rgba(34, 197, 94, 0.85); }
+.ep-btn.live-btn.active { background: rgba(34, 197, 94, 0.16); border-color: rgba(34, 197, 94, 0.55); }
 .ep-tag { font-size: 11px; color: var(--muted); }
 
 /* Top-Right */
@@ -239,14 +241,20 @@ input[type="range"] { width: 100%; accent-color: var(--accent); height: 4px; cur
 .hist-bar.current.ta { background: #7dd3fc; }
 .time-slider { margin-top: 2px; accent-color: var(--accent); }
 
-.kpi-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; padding-top: 7px; border-top: 1px solid var(--border); }
-.kpi { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.kpi-label { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.kpi-val { font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+.kpi-strip { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; padding-top: 7px; border-top: 1px solid var(--border); }
+.kpi { display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; }
+.kpi-label { font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kpi-val { font-size: 11.8px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kpi-val.amber { color: #fbbf24; }
 .kpi-val.ice { color: #7dd3fc; }
 .kpi-val.solar { color: #fde047; }
 .kpi-val.rain { color: #93c5fd; }
+.kpi-sun-row { display: inline-flex; align-items: center; gap: 5px; }
+.sun-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: #fde047; box-shadow: 0 0 7px rgba(253, 224, 71, 0.85);
+  transition: background-color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease;
+}
 
 /* Modal */
 .modal-backdrop {

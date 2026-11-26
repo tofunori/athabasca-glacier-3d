@@ -2,7 +2,7 @@ import "./style.css";
 import * as THREE from "three";
 import { GlacierScene } from "./glacierScene.js";
 
-const DATA_VER = "v7_clouds_sun_precip_20261125";
+const DATA_VER = "v8_snow_landscape_20261125";
 const loader = document.getElementById("loader");
 const loaderSub = document.getElementById("loaderSub");
 const canvas = document.getElementById("sceneCanvas");
@@ -109,7 +109,12 @@ async function fetchLiveAthabascaEpisode() {
   let nowIdx = times.indexOf(nowKey);
   if (nowIdx < 0) nowIdx = Math.min(times.length - 1, 24);
 
-  let snowPackMm = 0.0;
+  // If live weather is in winter / sub-freezing season, start with realistic seasonal snow cover across the valley!
+  const firstMonth = Number(times[0].slice(5, 7)) || 8;
+  const meanTa = h.temperature_2m.reduce((a, b) => a + Number(b ?? 0), 0) / Math.max(1, h.temperature_2m.length);
+  const isWinterSnow = (firstMonth >= 11 || firstMonth <= 4) && meanTa < 0.0;
+  let snowPackMm = isWinterSnow ? 14.0 : 0.0;
+  let snowLineM = isWinterSnow ? 1840.0 : 3480.0;
   let rainCumMm = 0.0;
   const hours = times.map((tstr, idx) => {
     const ds = tstr.slice(0, 10);
@@ -134,6 +139,14 @@ async function fetchLiveAthabascaEpisode() {
     rainCumMm += Math.max(0, precip - snowAdd);
     const melt = Math.max(0, (ta - 1.0) * 0.14 + Math.max(0, sw - 220) * 0.0018);
     snowPackMm = Math.max(0, Math.min(30, snowPackMm + snowAdd - melt));
+    if (snowAdd >= 0.08) {
+      const targetLine = Math.max(1840, Math.min(3450, zRs - 60));
+      snowLineM = snowPackMm >= 0.35 ? Math.min(snowLineM, targetLine) : (0.55 * snowLineM + 0.45 * targetLine);
+    } else if (snowPackMm <= 0.05) {
+      snowLineM = 3480.0;
+    } else if (melt > 0.05) {
+      snowLineM = Math.min(3480.0, snowLineM + melt * 75.0);
+    }
     return {
       t: idx, dayIdx: dIdx, date: ds, dayLabel: dayLabels[dIdx], h: hr,
       ta: Number(ta.toFixed(1)), rh: Number(rh.toFixed(0)), u: Number(u.toFixed(1)), wdir,
@@ -142,7 +155,7 @@ async function fetchLiveAthabascaEpisode() {
       clMid: Number(clMid.toFixed(2)), clHigh: Number(clHigh.toFixed(2)), wmo,
       plume: 0.0, pm25: 0.0, daod: 0.0,
       precip: Number(precip.toFixed(2)), snMm: Number((snCm * 1.4).toFixed(2)),
-      rainSnowM: Math.round(zRs), snowFrac: Number(snowFrac.toFixed(2)),
+      rainSnowM: Math.round(zRs), snowLineM: Math.round(snowLineM), snowFrac: Number(snowFrac.toFixed(2)),
       snowPackMm: Number(snowPackMm.toFixed(1)), rainCumMm: Number(rainCumMm.toFixed(1)),
       dryRate: 0.0, wetRate: 0.0, depRate: 0.0, depCum: 0.0, wetFrac: 0.0, deltaAlpha: 0.0,
     };
@@ -209,6 +222,7 @@ function sampleSequenceAtStep(ep, tFloat) {
     plume: lerp(a.plume ?? 0.3, b.plume ?? 0.3, f),
     precip: lerp(a.precip ?? 0, b.precip ?? 0, f),
     rainSnowM: lerp(a.rainSnowM ?? 2600, b.rainSnowM ?? 2600, f),
+    snowLineM: lerp(a.snowLineM ?? a.rainSnowM ?? 2600, b.snowLineM ?? b.rainSnowM ?? 2600, f),
     snowPackMm: lerp(a.snowPackMm ?? a.snowCumMm ?? 0, b.snowPackMm ?? b.snowCumMm ?? 0, f),
     wetFrac: lerp(a.wetFrac ?? 0, b.wetFrac ?? 0, f),
   };
@@ -470,9 +484,10 @@ async function boot() {
         }
         s.lw = 275 + s.cloud * 55;
         s.wetFrac = s.precip > 0.2 ? 0.78 : 0.0;
-        if (s.precip > 0.2) {
+        if (s.precip > 0.1) {
           const snowFrac = Math.max(0, Math.min(1, (3456 - s.rainSnowM) / (3456 - 1965)));
-          s.snowPackMm = Math.max(base.snowPackMm, s.precip * 4.5 * snowFrac);
+          s.snowPackMm = Math.max(base.snowPackMm, s.precip * 5.5 * snowFrac);
+          s.snowLineM = Math.max(1840, Math.min(s.snowLineM, s.rainSnowM - 50));
         }
       } else {
         syncSlidersToState(s);
@@ -495,6 +510,7 @@ async function boot() {
         sunTrans,
         precipMmH: s.precip,
         rainSnowM: s.rainSnowM,
+        snowLineM: s.snowLineM,
         snowPackMm: s.snowPackMm,
         windSpeed: s.u,
         windBearingDeg: s.wdir,

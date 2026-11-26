@@ -63,6 +63,7 @@ export class GlacierScene {
       sunTrans: 0.85,
       precipMmH: 0.0,
       rainSnowM: 2600.0,
+      snowLineM: 3480.0,
       snowPackMm: 0.0,
       windSpeed: 5.0,
       windBearingDeg: 245,
@@ -494,6 +495,7 @@ export class GlacierScene {
       uDepCumFrac: { value: 0.0 },
       uDepBoost: { value: this.state.boost },
       uRainSnowM: { value: this.state.rainSnowM },
+      uSnowLineM: { value: this.state.snowLineM },
       uSnowPackMm: { value: 0.0 },
       uRainIntensity: { value: 0.0 },
       uZMinM: { value: this.meta.zMinM },
@@ -540,6 +542,7 @@ export class GlacierScene {
           uniform float uDepCumFrac;
           uniform float uDepBoost;
           uniform float uRainSnowM;
+          uniform float uSnowLineM;
           uniform float uSnowPackMm;
           uniform float uRainIntensity;
           uniform float uZMinM;
@@ -610,19 +613,32 @@ export class GlacierScene {
           float plumePattern = 0.68 + 0.46 * fbm(vObjPos.xz * 0.55 + uWindDir * 1.4) + 0.22 * (1.0 - elevT);
           float localDepNorm = clamp(uDepCumFrac * plumePattern, 0.0, 1.35);
 
-          // Slope-aware multi-day fresh snowpack + live active snowfall dusting above Jennings line!
-          float activeSnowDust = clamp(uRainIntensity * 0.28, 0.0, 0.32) * smoothstep(uRainSnowM - 60.0, uRainSnowM + 140.0, elevM);
-          float snowDepthNorm = clamp(uSnowPackMm / 18.0 + activeSnowDust * 0.65, 0.0, 1.0);
-          // Snow lingers longer higher up, retreats upward as it melts
-          float snowLineEff = min(mix(2580.0, 2040.0, snowDepthNorm), mix(3500.0, uRainSnowM - 40.0, smoothstep(0.05, 0.25, activeSnowDust)));
-          float elevMask = smoothstep(snowLineEff - 110.0, snowLineEff + 170.0, elevM);
-          float slopeHold = smoothstep(0.54, 0.86, vSlopeUp + 0.14 * sastrugi);
-          float freshSnow = snowDepthNorm * elevMask * slopeHold * (0.72 + 0.35 * sastrugi);
-          freshSnow = clamp(freshSnow, 0.0, 0.92);
+          // Realistic full-massif snow accumulation & meltback (moraines, valley slopes, rock ridges AND glacier!)
+          // Exponential optical cover: even 1-3 mm SWE (~1-3 cm powder) visibly whitens dark rock & moraines, 8+ mm = full winter blanket!
+          float activeSnow = clamp(uRainIntensity * 0.55, 0.0, 0.65) * smoothstep(uRainSnowM - 100.0, uRainSnowM + 100.0, elevM);
+          float packCover = 1.0 - exp(-max(uSnowPackMm, 0.0) / 2.6);
+          float snowDepthNorm = clamp(max(packCover, activeSnow * 0.80), 0.0, 1.0);
+
+          // Live landscape snowline tracks actual snowfall elevation down to valley floor (1,840 m) & retreats upward during melt
+          float snowLineEff = min(uSnowLineM, mix(3520.0, uRainSnowM - 60.0, smoothstep(0.04, 0.25, activeSnow)));
+          float patchNoise = fbm(vObjPos.xz * 2.4 + vec2(3.1, 7.4));
+          float elevMask = smoothstep(snowLineEff - 120.0, snowLineEff + 150.0, elevM + (patchNoise - 0.5) * 140.0);
+
+          // Realistic Rockies slope retention: valley floors, moraines, talus & mountain ledges turn white; sheer >65 deg cliff bands stay dark!
+          float ledgeTex = fbm(vObjPos.xz * 9.5);
+          float slopeHold = smoothstep(0.28, 0.72, vSlopeUp + 0.20 * ledgeTex + 0.14 * snowDepthNorm);
+          // Keep proglacial lake dark unless deeply blanketed
+          float notLake = 1.0 - smoothstep(0.22, 0.62, water);
+          // Natural patchy snow-cover progression on dark rock/moraine crevices before turning solid white
+          float rockCrevice = smoothstep(0.55 - 0.65 * snowDepthNorm, 0.88 - 0.45 * snowDepthNorm, patchNoise * 0.65 + ledgeTex * 0.35 + snowDepthNorm * 0.55);
+          float terrainHold = mix(rockCrevice, 1.0, isCryo * 0.55 + snowDepthNorm * 0.45);
+
+          float freshSnow = snowDepthNorm * elevMask * slopeHold * terrainHold * notLake;
+          freshSnow = clamp(freshSnow * 1.12, 0.0, 0.96);
 
           // Active rain wets lower bare ice & dark rock below live rain-snow line
           float belowRainLine = 1.0 - smoothstep(uRainSnowM - 90.0, uRainSnowM + 110.0, elevM);
-          float wetSurface = clamp(uRainIntensity * 0.62, 0.0, 0.78) * belowRainLine;
+          float wetSurface = clamp(uRainIntensity * 0.62, 0.0, 0.78) * belowRainLine * (1.0 - freshSnow * 0.85);
 
           if (uMode < 0.5) {
             diffuseColor.rgb *= microShade;
@@ -642,9 +658,9 @@ export class GlacierScene {
             // Rain wets rock & moraines darker
             diffuseColor.rgb *= (1.0 - wetSurface * 0.28 * (1.0 - isSnow));
 
-            // Crisp fresh alpine snow blanket (realistic cool luminance, never blown-out flat white)
-            vec3 freshSnowCol = vec3(0.64, 0.71, 0.81) * (0.88 + 0.20 * sastrugi);
-            diffuseColor.rgb = mix(diffuseColor.rgb, freshSnowCol, freshSnow * 0.86);
+            // Crisp fresh alpine snow blanket across the ENTIRE massif (moraines, valley slopes, rock ridges & glacier!)
+            vec3 freshSnowCol = vec3(0.80, 0.86, 0.93) * (0.88 + 0.16 * sastrugi + 0.08 * grain);
+            diffuseColor.rgb = mix(diffuseColor.rgb, freshSnowCol, freshSnow * 0.94);
           } else if (uMode < 1.5) {
             float luma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
             vec3 hm = depHeatmap(clamp(localDepNorm * 0.95, 0.0, 1.0));
@@ -1874,6 +1890,7 @@ export class GlacierScene {
     sunTrans,
     precipMmH,
     rainSnowM,
+    snowLineM,
     snowPackMm,
     windSpeed,
     windBearingDeg,
@@ -1892,6 +1909,7 @@ export class GlacierScene {
     this.state.sunTrans = sunTrans ?? 0.85;
     this.state.precipMmH = precipMmH;
     this.state.rainSnowM = rainSnowM;
+    this.state.snowLineM = snowLineM ?? rainSnowM;
     this.state.snowPackMm = snowPackMm;
     this.state.windSpeed = windSpeed;
     this.state.windBearingDeg = windBearingDeg;
@@ -1944,6 +1962,7 @@ export class GlacierScene {
   _syncSurfaceUniforms() {
     this.terrainUniforms.uDepCumFrac.value = this.state.compareClean ? 0.0 : this.state.depProgress;
     this.terrainUniforms.uRainSnowM.value = this.state.rainSnowM;
+    this.terrainUniforms.uSnowLineM.value = this.state.compareClean ? 3600.0 : this.state.snowLineM;
     this.terrainUniforms.uSnowPackMm.value = this.state.compareClean ? 0.0 : this.state.snowPackMm;
     this.terrainUniforms.uRainIntensity.value = Math.min(1.5, this.state.precipMmH / 2.0);
   }

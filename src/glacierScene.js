@@ -2,17 +2,18 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 /**
- * Three.js 3D Immersive Glacier & Multi-Day Weather Simulator:
- * - Procedural atmospheric Sky Dome (sunrise/sunset twilight, solar Mie glow, alpine stars at night, smoke & storm skies)
- * - 320x320 real Copernicus GLO-30 DEM with slope-aware multi-day fresh snowpack accumulation & meltback,
- *   wet rain specular sheen, progressive FireWork soot darkening, and live Jennings rain-snow isotherm
- * - 5 terrain-draped 3D volumetric smoke strata pouring down the valley
- * - Dual-scale realistic RAIN: diagonal valley rain shafts + 14,000 camera-centered near-field slanted rain streaks
- * - Dual-scale realistic SNOW: soft feathery bokeh snowflake texture + 12,000 turbulent fluttering flakes + ridge spindrift
- * - Immersive "Sur le glacier (AWS)" first-person camera right on the ice at 2,180 m!
+ * Three.js 3D Photorealistic Glacier & Multi-Day Alpine Atmosphere Simulator (v2):
+ * - HDR linear-space Rayleigh + Mie Sky Dome with seamless volumetric horizon smoke band & alpine stars
+ * - 448x448 real Copernicus GLO-30 DEM (~24.6 m) + 16-azimuth Horizon Sky-View Ambient Occlusion,
+ *   procedural world-space micro-normals (limestone strata, glacial ogives/crevasses, wind sastrugi, lake waves),
+ *   glacial ice subsurface scattering (SSS), aspect-aware snow accumulation/meltback, and animated Lac Sunwapta
+ * - Seamless 35x35 km surrounding Canadian Rockies (320x320 GLO-30 + 16-azimuth SVF AO)
+ * - True 8-step 3D Volumetric Ray-Marched Wildfire Smoke (Beer-Lambert + Henyey-Greenstein Mie forward glow, ZERO flat sheets!)
+ * - 96-puff multi-lobe 3D volumetric cumulus/nimbus clouds with peak-wrapping soft terrain fade & projected ground shadows
+ * - Multi-scale realistic rain & snow (virga curtains, near-field velocity streaks, fluttering snowflakes, mist & spindrift)
  */
 export class GlacierScene {
-  constructor(canvas, meta, demU16, rgbTex, maskTex, ringU16 = null) {
+  constructor(canvas, meta, demU16, rgbTex, maskTex, aoTex = null, ringU16 = null, ringAoTex = null) {
     this.canvas = canvas;
     this.meta = meta;
     this.G = meta.grid;
@@ -40,6 +41,22 @@ export class GlacierScene {
     this.demTex.flipY = false;
     this.demTex.needsUpdate = true;
 
+    const makeNeutralAo = () => {
+      const t = new THREE.DataTexture(new Uint8Array([235, 128, 128, 255]), 1, 1, THREE.RGBAFormat);
+      t.colorSpace = THREE.NoColorSpace;
+      t.needsUpdate = true;
+      return t;
+    };
+    this.aoTex = aoTex || makeNeutralAo();
+    this.aoTex.colorSpace = THREE.NoColorSpace;
+    this.aoTex.wrapS = THREE.ClampToEdgeWrapping;
+    this.aoTex.wrapT = THREE.ClampToEdgeWrapping;
+
+    this.ringAoTex = ringAoTex || makeNeutralAo();
+    this.ringAoTex.colorSpace = THREE.NoColorSpace;
+    this.ringAoTex.wrapS = THREE.ClampToEdgeWrapping;
+    this.ringAoTex.wrapT = THREE.ClampToEdgeWrapping;
+
     this.state = {
       exag: 1.3,
       mode: 0,
@@ -56,7 +73,6 @@ export class GlacierScene {
       compareClean: false,
       hour: 13.0,
       depProgress: 0.0,
-      rfWm2: 0.0,
       plumeDensity: 0.4,
       cloudCover: 0.4,
       cloudLow: 0.3,
@@ -82,7 +98,6 @@ export class GlacierScene {
     this._buildSolarOrbAndArc();
     this._buildTerrain(rgbTex, maskTex);
     this._buildSurroundingRockies(ringU16);
-    this._buildVolumetricSmoke();
     this._buildCloudDeck();
     this._buildPrecipVolume();
     this._buildValleyMistAndSpindrift();
@@ -119,7 +134,8 @@ export class GlacierScene {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     this.scene = new THREE.Scene();
-    this.scene.fog = new THREE.FogExp2(0x101c2c, 0.012);
+    // Unified physical Rayleigh + 3D volumetric ray-marched smoke handles aerial perspective directly in linear radiance space!
+    this.scene.fog = null;
 
     this.camera = new THREE.PerspectiveCamera(38, 16 / 9, 0.04, 260);
     this.camera.position.set(9.4, 8.5, -10.3);
@@ -137,7 +153,7 @@ export class GlacierScene {
   }
 
   _initSkyDomeAndLighting() {
-    // Full procedural atmospheric Sky Dome (sunrise/sunset twilight, solar Mie halo, starry night, real high cirrus & mid clouds, smoke & storm skies!)
+    // HDR Linear-Space Physical Rayleigh + Mie Sky Dome (exact ACESFilmic + sRGB parity with terrain & 35 km Rockies!)
     this.skyUniforms = {
       uSunDir: { value: this._sunDir.clone() },
       uTime: { value: 0.0 },
@@ -152,7 +168,7 @@ export class GlacierScene {
       uSwNorm: { value: 0.6 },
     };
 
-    const skyGeo = new THREE.SphereGeometry(145, 48, 32);
+    const skyGeo = new THREE.SphereGeometry(145, 56, 36);
     const skyMat = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
@@ -199,133 +215,147 @@ export class GlacierScene {
         void main() {
           vec3 d = normalize(vDir);
           float h = clamp(d.y, -0.25, 1.0);
-          float horiz = pow(1.0 - max(h, 0.0), 3.2);
+          float horiz = pow(1.0 - max(h, 0.0), 3.4);
+          float lowBand = pow(1.0 - max(h, 0.0), 7.5);
+          vec3 sDir = normalize(uSunDir);
+          float sunDot = max(dot(d, sDir), 0.0);
 
-          // Night alpine sky (truly dark, unmistakable starry midnight!)
-          vec3 nightZen = vec3(0.008, 0.015, 0.036);
-          vec3 nightHor = vec3(0.024, 0.042, 0.082);
+          // Linear-space alpine midnight sky (rich deep cobalt, never flat black)
+          vec3 nightZen = vec3(0.0014, 0.0032, 0.0110);
+          vec3 nightHor = vec3(0.0065, 0.0135, 0.0320);
           vec3 skyNight = mix(nightZen, nightHor, horiz);
 
-          // Bright unmistakable high-altitude Rocky Mountain daytime sky
-          vec3 clearZen = vec3(0.140, 0.380, 0.740);
-          vec3 clearHor = vec3(0.620, 0.785, 0.945);
+          // Linear-space high-altitude Rocky Mountain Rayleigh sky (deep cobalt zenith -> crisp luminous azure horizon!)
+          vec3 clearZen = vec3(0.022, 0.135, 0.500);
+          vec3 clearHor = vec3(0.320, 0.530, 0.800);
           vec3 skyClear = mix(clearZen, clearHor, horiz);
 
-          // Bright daylight overcast storm sky (unmistakably daytime, never dark night!)
-          vec3 stormZen = vec3(0.320, 0.390, 0.480);
-          vec3 stormHor = vec3(0.560, 0.620, 0.700);
+          // Bright daylight overcast storm sky (linear space)
+          vec3 stormZen = vec3(0.115, 0.155, 0.215);
+          vec3 stormHor = vec3(0.300, 0.360, 0.440);
           vec3 skyStorm = mix(stormZen, stormHor, horiz);
 
-          // Wildfire smoky warm golden-amber daylight sky
-          vec3 smokeZen = vec3(0.340, 0.255, 0.170);
-          vec3 smokeHor = vec3(0.680, 0.460, 0.250);
-          vec3 skySmoke = mix(smokeZen, smokeHor, horiz);
+          // Wildfire smoke linear sky + Henyey-Greenstein Mie forward sun-glow
+          float g = 0.62;
+          float hg = (1.0 - g * g) / pow(max(0.22, 1.0 + g * g - 2.0 * g * dot(d, sDir)), 1.5);
+          float mieGlow = clamp((hg - 0.32) * 0.22, 0.0, 0.72);
+          vec3 smokeZen = vec3(0.145, 0.120, 0.095);
+          vec3 smokeHor = mix(vec3(0.420, 0.395, 0.355), vec3(0.760, 0.480, 0.220), clamp(0.28 + 0.58 * mieGlow + 0.32 * uSmoke, 0.0, 1.0));
+          vec3 skySmoke = mix(smokeZen, smokeHor, pow(1.0 - max(h, 0.0), 2.1));
 
-          vec3 daySky = mix(skyClear, skyStorm, clamp(uCloud * 0.76, 0.0, 1.0));
-          daySky = mix(daySky, skySmoke, clamp(uSmoke * 0.72, 0.0, 1.0));
+          vec3 daySky = mix(skyClear, skyStorm, clamp(uCloud * 0.78, 0.0, 1.0));
+          daySky = mix(daySky, skySmoke, clamp(uSmoke * 0.76, 0.0, 1.0));
+          // Dense trapped alpine horizon smoke veil matching the 35 km Rockies outer rim identically!
+          vec3 veilCol = mix(vec3(0.39, 0.38, 0.36), vec3(0.70, 0.45, 0.21), clamp(0.26 + 0.55 * mieGlow + 0.36 * uSmoke, 0.0, 1.0));
+          daySky = mix(daySky, veilCol, lowBand * clamp(uSmoke * 0.88, 0.0, 0.85));
 
-          // Golden / rose alpine sunrise & sunset glow along the sun horizon
-          float sunDot = max(dot(d, normalize(uSunDir)), 0.0);
-          vec3 twilightBand = mix(vec3(0.95, 0.46, 0.16), vec3(1.00, 0.80, 0.34), pow(sunDot, 2.0));
-          daySky = mix(daySky, twilightBand, uTwilight * horiz * (0.50 + 0.50 * pow(sunDot, 1.5)) * (1.0 - uCloud * 0.45));
+          // Golden / alpenglow rose sunrise & sunset horizon band
+          vec3 twilightBand = mix(vec3(0.95, 0.22, 0.05), vec3(1.15, 0.62, 0.14), pow(sunDot, 2.0));
+          daySky = mix(daySky, twilightBand, uTwilight * horiz * (0.48 + 0.52 * pow(sunDot, 1.5)) * (1.0 - uCloud * 0.42));
 
           vec3 col = mix(skyNight, daySky, uDaylight);
 
-          // Real projected hemispherical HIGH CIRRUS (uCloudHigh) & upper ALTOSTRATUS (uCloudMid) across the sky dome!
-          if (uShowClouds > 0.5 && h > 0.025 && (uCloudHigh > 0.05 || uCloudMid > 0.05)) {
-            vec2 skyPlane = d.xz / (h + 0.14);
-            float horizonFade = smoothstep(0.025, 0.22, h);
+          // Real projected hemispherical HIGH CIRRUS (uCloudHigh) & mid ALTOSTRATUS (uCloudMid) across the sky dome!
+          if (uShowClouds > 0.5 && h > 0.02 && (uCloudHigh > 0.05 || uCloudMid > 0.05)) {
+            vec2 skyPlane = d.xz / (h + 0.13);
+            float horizonFade = smoothstep(0.02, 0.22, h);
             vec2 wPerp = vec2(-uWindDir.y, uWindDir.x);
 
-            // Feathery wind-streaked alpine cirrus (>8 km)
             if (uCloudHigh > 0.05) {
-              vec2 cUv = vec2(dot(skyPlane, uWindDir) * 0.38 - uTime * 0.012, dot(skyPlane, wPerp) * 1.15);
-              float w1 = sfbm(cUv * 1.4 + vec2(2.3, 7.1));
-              float cirrus = smoothstep(0.68 - uCloudHigh * 0.36, 0.88, sfbm(cUv + 0.65 * w1));
+              vec2 cUv = vec2(dot(skyPlane, uWindDir) * 0.36 - uTime * 0.011, dot(skyPlane, wPerp) * 1.18);
+              float w1 = sfbm(cUv * 1.45 + vec2(2.3, 7.1));
+              float cirrus = smoothstep(0.68 - uCloudHigh * 0.36, 0.88, sfbm(cUv + 0.68 * w1));
               float cAlpha = cirrus * horizonFade * clamp(uCloudHigh * 0.78, 0.0, 0.68);
-              vec3 cDay = mix(vec3(0.86, 0.90, 0.96), vec3(1.0, 0.68, 0.44), uTwilight * 0.75);
-              cDay = mix(cDay, vec3(0.80, 0.60, 0.44), uSmoke * 0.55);
-              vec3 cNight = vec3(0.10, 0.14, 0.22);
-              vec3 cCol = mix(cNight, cDay, uDaylight) + vec3(0.28, 0.22, 0.14) * pow(sunDot, 8.0) * uDaylight;
+              vec3 cDay = mix(vec3(0.76, 0.83, 0.94), vec3(1.15, 0.48, 0.20), uTwilight * 0.78);
+              cDay = mix(cDay, vec3(0.62, 0.44, 0.28), uSmoke * 0.42);
+              vec3 cNight = vec3(0.012, 0.020, 0.042);
+              vec3 cCol = mix(cNight, cDay, uDaylight) + vec3(0.42, 0.32, 0.18) * pow(sunDot, 10.0) * uDaylight;
               col = mix(col, cCol, cAlpha);
             }
 
-            // Distant mid-level stratocumulus / altostratus (3-8 km) filling out real overcast & partly cloudy skies
             if (uCloudMid > 0.06) {
-              vec2 mUv = skyPlane * 0.48 - uWindDir * uTime * 0.018 + vec2(4.7, 9.2);
+              vec2 mUv = skyPlane * 0.46 - uWindDir * uTime * 0.016 + vec2(4.7, 9.2);
               float warp = sfbm(mUv * 1.2 + vec2(1.4, 3.8));
               float midN = sfbm(mUv + 0.55 * warp);
               float midMask = smoothstep(0.66 - uCloudMid * 0.44, 0.86, midN);
-              float mAlpha = midMask * horizonFade * clamp(uCloudMid * 0.85, 0.0, 0.82);
-              vec3 mDark = mix(vec3(0.20, 0.25, 0.32), vec3(0.13, 0.16, 0.22), uCloud * 0.6);
-              vec3 mLit = mix(vec3(0.82, 0.87, 0.93), vec3(0.96, 0.64, 0.38), uTwilight * 0.65);
-              vec3 mDay = mix(mDark, mLit, clamp(0.25 + 0.55 * (1.0 - midMask) + 0.35 * pow(sunDot, 3.0), 0.0, 1.0));
-              mDay = mix(mDay, vec3(0.55, 0.42, 0.30), uSmoke * 0.45);
-              vec3 mCol = mix(vec3(0.06, 0.09, 0.15), mDay, uDaylight);
+              float mAlpha = midMask * horizonFade * clamp(uCloudMid * 0.84, 0.0, 0.80);
+              vec3 mDark = mix(vec3(0.09, 0.12, 0.18), vec3(0.05, 0.07, 0.11), uCloud * 0.6);
+              vec3 mLit = mix(vec3(0.70, 0.78, 0.88), vec3(1.05, 0.46, 0.16), uTwilight * 0.68);
+              vec3 mDay = mix(mDark, mLit, clamp(0.22 + 0.56 * (1.0 - midMask) + 0.38 * pow(sunDot, 3.0), 0.0, 1.0));
+              vec3 mCol = mix(vec3(0.008, 0.014, 0.028), mDay, uDaylight);
               col = mix(col, mCol, mAlpha);
             }
           }
 
-          // Subtle below-horizon ground reflection for orbital block view (bright slate in daytime, deep midnight at night)
+          // Smooth below-horizon reflection (harmonizes with Bloc 3D diorama & 35 km rim)
           if (h < 0.0) {
-            vec3 belowCol = mix(vec3(0.02, 0.03, 0.06), vec3(0.24, 0.33, 0.44), uDaylight);
-            col = mix(col, belowCol, clamp(-h * 4.5, 0.0, 0.85));
+            vec3 belowCol = mix(vec3(0.003, 0.006, 0.016), mix(vec3(0.09, 0.15, 0.24), vec3(0.24, 0.21, 0.17), uSmoke * 0.7), uDaylight);
+            col = mix(col, belowCol, clamp(-h * 4.2, 0.0, 0.88));
           }
 
-          // Visible golden-yellow solar disc & warm Mie scattering corona — clearly reflects live cloud & smoke masking!
+          // HDR Golden Solar Disc + Realistic Mie Aureole (ACESFilmic blooms incandescent core cleanly!)
           if (uDaylight > 0.04 && uSunDir.y > -0.02) {
             float maskKeep = clamp(uSwNorm, 0.04, 1.0);
-            float disc = smoothstep(0.9972, 0.9992, sunDot);
-            float innerHalo = pow(sunDot, 42.0) * 1.05;
-            float wideHalo = pow(sunDot, 8.0) * 0.40;
-            vec3 clearCol = vec3(1.00, 0.86, 0.26);
-            vec3 smokeOrb = vec3(1.00, 0.34, 0.06);
-            vec3 cloudVeil = vec3(0.92, 0.88, 0.72);
-            vec3 sunTint = mix(clearCol, cloudVeil, clamp(uCloud * 0.72, 0.0, 1.0));
-            sunTint = mix(sunTint, smokeOrb, clamp(uSmoke * 0.88 + uTwilight * 0.40, 0.0, 1.0));
-            float discPower = disc * (2.9 * pow(maskKeep, 0.82) * (1.0 - uCloud * 0.68) + 0.45 * uSmoke * (1.0 - uCloud * 0.62));
-            float haloPower = (innerHalo * (0.28 + 0.95 * maskKeep) + wideHalo * (0.35 + 0.65 * maskKeep));
+            float disc = smoothstep(0.9978, 0.9994, sunDot);
+            float innerHalo = pow(sunDot, 55.0) * 1.15;
+            float wideHalo = pow(sunDot, 9.0) * 0.32;
+            vec3 clearCol = vec3(1.65, 1.28, 0.32);
+            vec3 smokeOrb = vec3(1.75, 0.32, 0.04);
+            vec3 cloudVeil = vec3(1.05, 0.96, 0.72);
+            vec3 sunTint = mix(clearCol, cloudVeil, clamp(uCloud * 0.70, 0.0, 1.0));
+            sunTint = mix(sunTint, smokeOrb, clamp(uSmoke * 0.88 + uTwilight * 0.45, 0.0, 1.0));
+            float discPower = disc * (3.6 * pow(maskKeep, 0.80) * (1.0 - uCloud * 0.68) + 0.55 * uSmoke * (1.0 - uCloud * 0.60));
+            float haloPower = (innerHalo * (0.25 + 0.95 * maskKeep) + wideHalo * (0.30 + 0.65 * maskKeep));
             col += sunTint * (discPower + haloPower) * uDaylight;
           }
 
-          // Crisp alpine stars at night (when clear sky & dark)
-          float nightClear = (1.0 - uDaylight) * (1.0 - uCloud * 0.85) * (1.0 - uSmoke * 0.7) * smoothstep(0.08, 0.35, h);
+          // Crisp alpine starry night + subtle Milky Way glow
+          float nightClear = (1.0 - uDaylight) * (1.0 - uCloud * 0.85) * (1.0 - uSmoke * 0.7) * smoothstep(0.06, 0.34, h);
           if (nightClear > 0.05) {
-            vec3 cell = floor(d * 240.0);
+            vec3 cell = floor(d * 260.0);
             float rnd = hash31(cell);
-            float star = smoothstep(0.9965, 0.9998, rnd);
-            col += vec3(0.85, 0.92, 1.0) * star * nightClear * 0.9;
+            float star = smoothstep(0.9962, 0.9998, rnd);
+            float twinkle = 0.75 + 0.25 * sin(uTime * 2.5 + rnd * 60.0);
+            vec3 starTint = mix(vec3(0.75, 0.88, 1.0), vec3(1.0, 0.92, 0.76), fract(rnd * 37.0));
+            col += starTint * star * twinkle * nightClear * 1.35;
+            float mwBand = exp(-pow(dot(d, normalize(vec3(0.55, 0.42, -0.72))) * 3.8, 2.0));
+            float mwCloud = sfbm(d.xz * 3.5 + vec2(1.4, 2.7));
+            col += vec3(0.014, 0.022, 0.045) * mwBand * mwCloud * nightClear;
           }
 
           gl_FragColor = vec4(col, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
     });
     this.skyDome = new THREE.Mesh(skyGeo, skyMat);
     this.scene.add(this.skyDome);
 
-    // Lighting
+    // Physical Alpine Lighting (crisp shadow map + cerulean sky fill + subtle alpenglow snow bounce!)
     this.hemiLight = new THREE.HemisphereLight(0x88c4ff, 0x2a211b, 0.72);
     this.scene.add(this.hemiLight);
 
+    const maxTex = this.renderer.capabilities.maxTextureSize || 2048;
+    const shadowRes = maxTex >= 4096 ? 4096 : 2048;
     this.sunLight = new THREE.DirectionalLight(0xfff1dc, 2.3);
     this.sunLight.position.set(8, 12, 10);
     this.sunLight.castShadow = true;
-    this.sunLight.shadow.mapSize.width = 2048;
-    this.sunLight.shadow.mapSize.height = 2048;
+    this.sunLight.shadow.mapSize.width = shadowRes;
+    this.sunLight.shadow.mapSize.height = shadowRes;
     this.sunLight.shadow.camera.near = 2.0;
-    this.sunLight.shadow.camera.far = 45.0;
-    const d = 9.5;
+    this.sunLight.shadow.camera.far = 42.0;
+    const d = 7.6;
     this.sunLight.shadow.camera.left = -d;
     this.sunLight.shadow.camera.right = d;
     this.sunLight.shadow.camera.top = d;
     this.sunLight.shadow.camera.bottom = -d;
-    this.sunLight.shadow.bias = -0.0006;
-    this.sunLight.shadow.normalBias = 0.035;
+    this.sunLight.shadow.bias = -0.00035;
+    this.sunLight.shadow.normalBias = 0.018;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    this.rimLight = new THREE.DirectionalLight(0x6ba6e6, 0.35);
+    this.rimLight = new THREE.DirectionalLight(0x6ba6e6, 0.42);
     this.rimLight.position.set(-10, 6, -12);
     this.scene.add(this.rimLight);
 
@@ -495,6 +525,7 @@ export class GlacierScene {
 
     this.terrainUniforms = {
       uMaskTex: { value: maskTex },
+      uAoTex: { value: this.aoTex },
       uMode: { value: 0.0 },
       uContours: { value: 0.0 },
       uShowIsotherm: { value: 1.0 },
@@ -506,11 +537,11 @@ export class GlacierScene {
       uRainIntensity: { value: 0.0 },
       uSmokeHaze: { value: 0.0 },
       uDaylight: { value: 0.9 },
+      uTwilight: { value: 0.0 },
       uTime: { value: 0.0 },
       uSunDir: { value: this._sunDir.clone() },
       uCloudShadowAmt: { value: 0.3 },
       uExag: { value: this.state.exag },
-      uRfNorm: { value: 0.0 },
       uZMinM: { value: this.meta.zMinM },
       uZRangeKm: { value: this.zRangeKm },
       uWindDir: { value: new THREE.Vector2(0.85, -0.52) },
@@ -549,6 +580,7 @@ export class GlacierScene {
           "#include <common>",
           `#include <common>
           uniform sampler2D uMaskTex;
+          uniform sampler2D uAoTex;
           uniform float uMode;
           uniform float uContours;
           uniform float uShowIsotherm;
@@ -560,11 +592,11 @@ export class GlacierScene {
           uniform float uRainIntensity;
           uniform float uSmokeHaze;
           uniform float uDaylight;
+          uniform float uTwilight;
           uniform float uTime;
           uniform vec3 uSunDir;
           uniform float uCloudShadowAmt;
           uniform float uExag;
-          uniform float uRfNorm;
           uniform float uZMinM;
           uniform float uZRangeKm;
           uniform vec2 uWindDir;
@@ -596,6 +628,9 @@ export class GlacierScene {
             }
             return v;
           }
+          float fbm2(vec2 p) {
+            return 0.65 * vnoise(p) + 0.35 * vnoise(p * 2.13 + vec2(5.7, 9.2));
+          }
           vec3 depHeatmap(float t) {
             vec3 c0 = vec3(0.012, 0.022, 0.055);
             vec3 c1 = vec3(0.070, 0.045, 0.190);
@@ -607,23 +642,33 @@ export class GlacierScene {
             if (t < 0.82) return mix(c2, c3, (t - 0.55) / 0.27);
             return mix(c3, c4, clamp((t - 0.82) / 0.18, 0.0, 1.0));
           }
-          vec3 rfHeatmap(float t) {
-            // Magma/Inferno perceptual scientific ramp for instantaneous radiative forcing RF = -dAlpha * SW (0..55 W m-2)
-            vec3 c0 = vec3(0.025, 0.022, 0.085);
-            vec3 c1 = vec3(0.260, 0.035, 0.340);
-            vec3 c2 = vec3(0.760, 0.145, 0.180);
-            vec3 c3 = vec3(0.960, 0.490, 0.055);
-            vec3 c4 = vec3(0.990, 0.940, 0.520);
-            if (t < 0.25) return mix(c0, c1, t / 0.25);
-            if (t < 0.55) return mix(c1, c2, (t - 0.25) / 0.30);
-            if (t < 0.82) return mix(c2, c3, (t - 0.55) / 0.27);
-            return mix(c3, c4, clamp((t - 0.82) / 0.18, 0.0, 1.0));
+          // Procedural surface micro-height for analytical world-space bump normals (limestone ledges, ice ogives, snow sastrugi, lake waves)
+          float terrainMicroHeight(vec2 xz, float elevM, float isCryo, float isSnow, float isIce, float freshSnow, float isLake) {
+            vec2 wa = vec2(dot(xz, uWindDir), dot(xz, vec2(-uWindDir.y, uWindDir.x)));
+            float rockStrata = sin(elevM * 0.13 + fbm2(xz * 2.4) * 3.8) * 0.45 + (fbm2(xz * 19.0) - 0.5) * 0.85;
+            float iceOgive = sin(xz.x * 18.0 - xz.y * 22.0 + vnoise(xz * 6.0) * 3.0) * 0.32 + (vnoise(xz * 28.0) - 0.5) * 0.65;
+            float snowDrift = (fbm2(vec2(wa.x * 5.5, wa.y * 16.0)) - 0.5) * 0.72;
+            float h = mix(rockStrata * 0.85, mix(iceOgive * 0.62, snowDrift * 0.42, isSnow), isCryo);
+            h = mix(h, snowDrift * 0.38, freshSnow * 0.85);
+            if (isLake > 0.05) {
+              vec2 p1 = xz * 26.0 - uWindDir * uTime * 1.15;
+              vec2 p2 = xz * 46.0 + vec2(uWindDir.y, -uWindDir.x) * uTime * 0.85;
+              vec2 p3 = xz * 74.0 - uWindDir * uTime * 1.65;
+              float wH = (vnoise(p1) - 0.5) * 0.50 + (vnoise(p2) - 0.5) * 0.32 + (vnoise(p3) - 0.5) * 0.18;
+              h = mix(h, wH * 0.48, isLake);
+            }
+            return h;
           }`
         )
         .replace(
           "#include <map_fragment>",
           `#include <map_fragment>
           vec3 msk = texture2D(uMaskTex, vTerrainUv).rgb;
+          vec3 aoMap = texture2D(uAoTex, vTerrainUv).rgb;
+          float svfAo = aoMap.r;        // 16-azimuth Horizon Sky-View Factor [0.40..0.96]
+          float topoCurv = aoMap.g;     // Multi-scale curvature: <0.5 gully/hollow, >0.5 ridge/arete
+          float warmAspect = aoMap.b;   // Solar aspect: >0.5 sun-exposed South/SW, <0.5 shaded North
+
           float visAlb = msk.r;
           float ndsi = msk.g * 2.0 - 1.0;
           float water = msk.b;
@@ -633,6 +678,7 @@ export class GlacierScene {
           float isCryo = smoothstep(0.30, 0.46, ndsi);
           float isSnow = isCryo * smoothstep(0.38, 0.58, visAlb);
           float isIce = isCryo * (1.0 - smoothstep(0.38, 0.58, visAlb));
+          float isLake = smoothstep(0.22, 0.62, water);
 
           vec2 windAligned = vec2(
             dot(vObjPos.xz, uWindDir),
@@ -640,103 +686,88 @@ export class GlacierScene {
           );
           float sastrugi = fbm(vec2(windAligned.x * 4.5, windAligned.y * 12.0));
           float grain = fbm(vObjPos.xz * 18.0);
-          float microShade = mix(1.0, 0.84 + 0.24 * sastrugi, isSnow) * (0.90 + 0.16 * grain);
+          float microShade = mix(1.0, 0.85 + 0.22 * sastrugi, isSnow) * (0.91 + 0.15 * grain);
 
           float plumePattern = 0.68 + 0.46 * fbm(vObjPos.xz * 0.55 + uWindDir * 1.4) + 0.22 * (1.0 - elevT);
           float localDepNorm = clamp(uDepCumFrac * plumePattern, 0.0, 1.35);
 
-          // Realistic full-massif snow accumulation & meltback (moraines, valley slopes, rock ridges AND glacier!)
-          // Exponential optical cover: even 1-3 mm SWE (~1-3 cm powder) visibly whitens dark rock & moraines, 8+ mm = full winter blanket!
+          // Physically realistic aspect- & gully-aware snow accumulation & meltback across the ENTIRE Rockies massif!
+          // Fresh snow holds longer in concave couloirs (topoCurv < 0.5) & cool north slopes (warmAspect < 0.5),
+          // while melting off sun-exposed south rocky ridges first!
           float activeSnow = clamp(uRainIntensity * 0.55, 0.0, 0.65) * smoothstep(uRainSnowM - 100.0, uRainSnowM + 100.0, elevM);
           float packCover = 1.0 - exp(-max(uSnowPackMm, 0.0) / 2.6);
           float snowDepthNorm = clamp(max(packCover, activeSnow * 0.80), 0.0, 1.0);
 
-          // Live landscape snowline tracks actual snowfall elevation down to valley floor (1,840 m) & retreats upward during melt
+          float aspectBiasM = (warmAspect - 0.5) * 185.0 * (1.0 - activeSnow * 0.6);
+          float gullyBiasM = (topoCurv - 0.5) * 145.0;
           float snowLineEff = min(uSnowLineM, mix(3520.0, uRainSnowM - 60.0, smoothstep(0.04, 0.25, activeSnow)));
           float patchNoise = fbm(vObjPos.xz * 2.4 + vec2(3.1, 7.4));
-          float elevMask = smoothstep(snowLineEff - 120.0, snowLineEff + 150.0, elevM + (patchNoise - 0.5) * 140.0);
+          float elevMask = smoothstep(snowLineEff - 120.0, snowLineEff + 150.0, elevM - aspectBiasM - gullyBiasM + (patchNoise - 0.5) * 115.0);
 
-          // Realistic Rockies slope retention: valley floors, moraines, talus & mountain ledges turn white; sheer >65 deg cliff bands stay dark!
           float ledgeTex = fbm(vObjPos.xz * 9.5);
-          float slopeHold = smoothstep(0.28, 0.72, vSlopeUp + 0.20 * ledgeTex + 0.14 * snowDepthNorm);
-          // Keep proglacial lake dark unless deeply blanketed
-          float notLake = 1.0 - smoothstep(0.22, 0.62, water);
-          // Natural patchy snow-cover progression on dark rock/moraine crevices before turning solid white
-          float rockCrevice = smoothstep(0.55 - 0.65 * snowDepthNorm, 0.88 - 0.45 * snowDepthNorm, patchNoise * 0.65 + ledgeTex * 0.35 + snowDepthNorm * 0.55);
+          float slopeHold = smoothstep(0.26, 0.70, vSlopeUp + 0.22 * ledgeTex + 0.16 * (0.5 - topoCurv) + 0.14 * snowDepthNorm);
+          float notLake = 1.0 - isLake;
+          float rockCrevice = smoothstep(0.55 - 0.65 * snowDepthNorm, 0.88 - 0.45 * snowDepthNorm, patchNoise * 0.55 + ledgeTex * 0.28 + (0.65 - topoCurv) * 0.35 + snowDepthNorm * 0.52);
           float terrainHold = mix(rockCrevice, 1.0, isCryo * 0.55 + snowDepthNorm * 0.45);
 
-          float freshSnow = snowDepthNorm * elevMask * slopeHold * terrainHold * notLake;
-          freshSnow = clamp(freshSnow * 1.12, 0.0, 0.96);
+          float freshSnow = clamp(snowDepthNorm * elevMask * slopeHold * terrainHold * notLake * 1.14, 0.0, 0.96);
 
-          // Active rain wets lower bare ice & dark rock below live rain-snow line
           float belowRainLine = 1.0 - smoothstep(uRainSnowM - 90.0, uRainSnowM + 110.0, elevM);
           float wetSurface = clamp(uRainIntensity * 0.62, 0.0, 0.78) * belowRainLine * (1.0 - freshSnow * 0.85);
 
           // Projected moving 3D cloud shadows gliding across the glacier & cliffs along the true sun vector!
           float cloudShadow = 1.0;
           if (uCloudShadowAmt > 0.08 && uDaylight > 0.08) {
-            vec2 shP = vObjPos.xz + uSunDir.xz * ((3.3 - vObjPos.y) / max(uSunDir.y, 0.24));
-            float cn = fbm(shP * 0.26 - uWindDir * uTime * 0.065);
+            vec2 shP = vObjPos.xz + uSunDir.xz * ((3.5 - vObjPos.y) / max(uSunDir.y, 0.24));
+            float cn = fbm(shP * 0.25 - uWindDir * uTime * 0.062);
             float cMask = smoothstep(0.66 - uCloudShadowAmt * 0.42, 0.84, cn);
-            cloudShadow = 1.0 - cMask * uCloudShadowAmt * 0.48 * uDaylight;
+            cloudShadow = 1.0 - cMask * uCloudShadowAmt * 0.46 * uDaylight;
           }
 
           if (uMode < 0.5) {
-            diffuseColor.rgb *= microShade;
-            diffuseColor.rgb *= mix(vec3(1.0), vec3(0.84, 0.89, 0.95), isSnow * 0.45);
+            // Subtle alpine cliff striations & glacial blue-ice depth enhancement
+            float cliffReveal = (1.0 - isCryo) * (1.0 - vSlopeUp);
+            float strataCol = sin(elevM * 0.11 + ledgeTex * 3.5) * 0.06 * cliffReveal;
+            diffuseColor.rgb = max(vec3(0.01), diffuseColor.rgb * (microShade + strataCol));
+            // Give bare glacier ice natural glacial turquoise-steel hue & snow crisp alpine balance
+            diffuseColor.rgb *= mix(vec3(1.0), vec3(0.86, 0.92, 0.98), isSnow * 0.42);
+            diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.86, 0.97, 1.08), isIce * 0.35);
 
             float depVis = pow(clamp(localDepNorm, 0.0, 1.25), 0.78);
-            // Physically realistic glacier impurity darkening (subtle charcoal-gray / dusty-ice tint matching real webcam, not chocolate mud!)
             float sootCover = clamp(depVis * 0.22 * uDepBoost * (0.20 + 0.80 * isCryo), 0.0, 0.72);
             float impurityEnrich = mix(0.85, 1.35, isIce) * (0.80 + 0.40 * fbm(vObjPos.xz * 3.2));
             sootCover = clamp(sootCover * impurityEnrich, 0.0, 0.74);
-            // Fresh snow buries wildfire soot and resets surface albedo!
             sootCover *= (1.0 - freshSnow * 0.90);
 
-            vec3 sootTint = mix(vec3(0.20, 0.19, 0.17), vec3(0.08, 0.08, 0.08), isIce);
+            vec3 sootTint = mix(vec3(0.18, 0.17, 0.16), vec3(0.07, 0.07, 0.08), isIce);
             diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.46 + sootTint * 0.54, sootCover * isCryo);
             diffuseColor.rgb *= (1.0 - sootCover * 0.08 * (1.0 - isCryo));
 
             // Rain wets rock & moraines darker
-            diffuseColor.rgb *= (1.0 - wetSurface * 0.28 * (1.0 - isSnow));
+            diffuseColor.rgb *= (1.0 - wetSurface * 0.30 * (1.0 - isSnow));
 
-            // Crisp fresh alpine snow blanket across the ENTIRE massif (moraines, valley slopes, rock ridges & glacier!)
-            vec3 freshSnowCol = vec3(0.80, 0.86, 0.93) * (0.88 + 0.16 * sastrugi + 0.08 * grain);
+            // Crisp fresh alpine snow blanket across moraines, gullies, rock ledges & glacier
+            vec3 freshSnowCol = vec3(0.82, 0.88, 0.95) * (0.88 + 0.15 * sastrugi + 0.07 * grain);
             diffuseColor.rgb = mix(diffuseColor.rgb, freshSnowCol, freshSnow * 0.94);
 
-            // Animated proglacial Lac Sunwapta: wind micro-ripples, glacial turquoise depth, Fresnel sky reflection & sun glint!
-            float isLake = smoothstep(0.22, 0.62, water);
+            // Proglacial Lac Sunwapta glacial rock-flour turquoise base + pale silt shoreline
             if (isLake > 0.01) {
-              vec2 wUv1 = vObjPos.xz * 26.0 - uWindDir * uTime * 0.9;
-              vec2 wUv2 = vObjPos.xz * 44.0 + vec2(uWindDir.y, -uWindDir.x) * uTime * 0.65;
-              float rip = (vnoise(wUv1) - 0.5) * 0.6 + (vnoise(wUv2) - 0.5) * 0.4;
-              vec3 viewW = normalize(cameraPosition - vObjPos);
-              vec3 nW = normalize(vec3(rip * 0.24, 1.0, rip * 0.24));
-              float fres = pow(1.0 - max(dot(viewW, nW), 0.0), 3.2);
-              vec3 deepLake = mix(vec3(0.020, 0.055, 0.095), vec3(0.045, 0.240, 0.265), uDaylight);
-              vec3 skyRefl = mix(vec3(0.04, 0.07, 0.14), mix(vec3(0.45, 0.62, 0.82), vec3(0.68, 0.62, 0.54), uSmokeHaze * 0.65), uDaylight);
-              vec3 hVec = normalize(viewW + normalize(uSunDir));
-              float glint = pow(max(dot(nW, hVec), 0.0), 90.0) * uDaylight * (1.0 - uCloudShadowAmt * 0.6) * 0.95;
-              vec3 lakeCol = mix(deepLake, skyRefl, clamp(0.18 + 0.72 * fres, 0.0, 0.88)) + vec3(1.0, 0.92, 0.68) * glint;
-              diffuseColor.rgb = mix(diffuseColor.rgb, lakeCol, isLake);
+              float shore = smoothstep(0.22, 0.42, water) * (1.0 - smoothstep(0.45, 0.70, water));
+              vec3 flourBase = mix(vec3(0.014, 0.042, 0.072), vec3(0.032, 0.195, 0.215), uDaylight);
+              flourBase = mix(flourBase, vec3(0.14, 0.26, 0.27), shore * 0.45 * uDaylight);
+              diffuseColor.rgb = mix(diffuseColor.rgb, flourBase, isLake);
             }
 
             // Apply moving cloud shadows across terrain
             diffuseColor.rgb *= cloudShadow;
           } else if (uMode < 1.5) {
-            // Scientific Mode 1: Instantaneous Surface Radiative Forcing RF = -dAlpha * SWdown (W m-2)
-            float luma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
-            float rfLocal = clamp(uRfNorm * (0.62 + 0.58 * localDepNorm) * mix(0.85, 1.32, isIce) * (1.0 - freshSnow * 0.92) * cloudShadow, 0.0, 1.0);
-            vec3 hm = rfHeatmap(rfLocal);
-            vec3 rockBase = diffuseColor.rgb * 0.28 * cloudShadow;
-            diffuseColor.rgb = mix(rockBase, hm * (0.68 + 0.48 * sqrt(max(luma, 0.01))), mix(0.10, 0.95, isCryo));
-          } else if (uMode < 2.5) {
-            // Mode 2: Cumulative FireWork carbon deposition (EC+POM+SOM, mg m-2)
+            // Mode 1: Cumulative FireWork carbon deposition (EC+POM+SOM, mg m-2)
             float luma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
             vec3 hm = depHeatmap(clamp(localDepNorm * 0.95, 0.0, 1.0));
             vec3 rockBase = diffuseColor.rgb * 0.35;
             diffuseColor.rgb = mix(rockBase, hm * (0.65 + 0.55 * sqrt(max(luma, 0.01))), mix(0.28, 0.94, isCryo));
-          } else if (uMode < 3.5) {
+          } else if (uMode < 2.5) {
+            // Mode 2: Glacier / Snow / Lake classification (NDSI + albedo)
             vec3 rockCol = mix(vec3(0.030, 0.036, 0.040), vec3(0.160, 0.125, 0.095), clamp(visAlb * 3.0, 0.0, 1.0));
             vec3 iceCol = mix(vec3(0.028, 0.165, 0.440), vec3(0.145, 0.440, 0.760), clamp(visAlb * 1.7, 0.0, 1.0));
             vec3 snowCol = vec3(0.60, 0.67, 0.76) * microShade;
@@ -744,6 +775,7 @@ export class GlacierScene {
             col = mix(col, vec3(0.015, 0.38, 0.42), smoothstep(0.25, 0.65, water));
             diffuseColor.rgb = col;
           } else {
+            // Mode 3: Sculpted geomorphological relief model
             diffuseColor.rgb = mix(vec3(0.26, 0.29, 0.34), vec3(0.58, 0.63, 0.70), elevT) * microShade * cloudShadow;
           }
 
@@ -754,7 +786,7 @@ export class GlacierScene {
             float fw500 = fwidth(elevM / 500.0) * 1.7;
             float l100 = 1.0 - smoothstep(0.0, max(fw100, 0.014), c100);
             float l500 = 1.0 - smoothstep(0.0, max(fw500, 0.010), c500);
-            vec3 lc = uMode > 3.5 ? vec3(0.14, 0.20, 0.28) : vec3(0.05, 0.09, 0.14);
+            vec3 lc = uMode > 2.5 ? vec3(0.14, 0.20, 0.28) : vec3(0.05, 0.09, 0.14);
             diffuseColor.rgb = mix(diffuseColor.rgb, lc, clamp(l100 * 0.34 + l500 * 0.50, 0.0, 0.75));
           }
 
@@ -768,64 +800,154 @@ export class GlacierScene {
         .replace(
           "#include <roughnessmap_fragment>",
           `#include <roughnessmap_fragment>
-          vec3 mskR = texture2D(uMaskTex, vTerrainUv).rgb;
-          float ndsiR = mskR.g * 2.0 - 1.0;
-          float isCryoR = smoothstep(0.30, 0.46, ndsiR);
-          float isSnowR = isCryoR * smoothstep(0.38, 0.58, mskR.r);
-          float isIceR = isCryoR * (1.0 - smoothstep(0.38, 0.58, mskR.r));
-          float elevMR = uZMinM + vBaseElev * 1000.0;
-          float belowR = 1.0 - smoothstep(uRainSnowM - 80.0, uRainSnowM + 100.0, elevMR);
-          float rVal = 0.90;
-          rVal = mix(rVal, 0.68, isSnowR);
-          rVal = mix(rVal, 0.34, isIceR);
-          rVal = mix(rVal, 0.10, smoothstep(0.25, 0.65, mskR.b));
-          rVal = mix(rVal, 0.85, clamp(uDepCumFrac * 0.32 * isCryoR, 0.0, 0.5));
-          rVal = mix(rVal, 0.15, clamp(uRainIntensity * 0.38, 0.0, 0.62) * belowR);
+          float rVal = 0.88;
+          rVal = mix(rVal, 0.62, isSnow);
+          rVal = mix(rVal, 0.28, isIce);
+          rVal = mix(rVal, 0.58, freshSnow * 0.75);
+          rVal = mix(rVal, 0.06, isLake);
+          rVal = mix(rVal, 0.85, clamp(uDepCumFrac * 0.32 * isCryo, 0.0, 0.5));
+          rVal = mix(rVal, 0.16, wetSurface * 0.75);
           roughnessFactor = rVal;`
         )
         .replace(
+          "#include <normal_fragment_maps>",
+          `#include <normal_fragment_maps>
+          // Real-time analytical world-space micro-normal bump mapping (limestone ledges, glacier ogives, wind sastrugi & animated lake waves!)
+          if (uMode < 0.5 || uMode > 2.5) {
+            float camD = length(vObjPos - cameraPosition);
+            float bumpDistFade = 1.0 - smoothstep(6.0, 22.0, camD);
+            float eps = 0.018;
+            float h0 = terrainMicroHeight(vObjPos.xz, elevM, isCryo, isSnow, isIce, freshSnow, isLake);
+            float hX = terrainMicroHeight(vObjPos.xz + vec2(eps, 0.0), elevM, isCryo, isSnow, isIce, freshSnow, isLake);
+            float hZ = terrainMicroHeight(vObjPos.xz + vec2(0.0, eps), elevM, isCryo, isSnow, isIce, freshSnow, isLake);
+            float bumpStrength = mix(0.28, 0.16, isCryo) * (0.35 + 0.65 * bumpDistFade);
+            bumpStrength = mix(bumpStrength, 0.22, isLake);
+            vec3 gWorld = vec3((hX - h0) / eps, 0.0, (hZ - h0) / eps) * bumpStrength * 0.032;
+            vec3 gView = (viewMatrix * vec4(gWorld, 0.0)).xyz;
+            normal = normalize(normal - gView);
+          }`
+        )
+        .replace(
+          "#include <aomap_fragment>",
+          `#include <aomap_fragment>
+          // 16-Azimuth Horizon Sky-View Ambient Occlusion + crisp alpine blue indirect sky bounce in shadow!
+          float aoWeight = mix(0.46, 1.08, pow(clamp(svfAo, 0.0, 1.0), 1.15));
+          vec3 alpineShadowBounce = mix(vec3(0.76, 0.88, 1.12), vec3(1.0), clamp(svfAo, 0.0, 1.0));
+          reflectedLight.indirectDiffuse *= aoWeight * mix(vec3(1.0), alpineShadowBounce, uDaylight * 0.65);
+          reflectedLight.indirectSpecular *= aoWeight;
+
+          if (uMode < 0.5) {
+            vec3 viewW = normalize(cameraPosition - vObjPos);
+            vec3 sDirW = normalize(uSunDir);
+            // Translucent glacial-ice & snow-crest subsurface scattering (SSS)
+            float wrapNdl = clamp(dot(vec3(0.0, 1.0, 0.0), sDirW) * 0.5 + 0.5, 0.0, 1.0);
+            float backLit = pow(max(dot(-viewW, sDirW), 0.0), 3.0) * 0.55 + 0.45 * wrapNdl;
+            float ridgeCrest = smoothstep(0.50, 0.82, topoCurv);
+            vec3 iceSSS = vec3(0.05, 0.24, 0.36) * isIce * (1.0 - freshSnow * 0.8) * backLit * uDaylight * cloudShadow * 0.55;
+            vec3 snowSSS = vec3(0.16, 0.26, 0.36) * max(isSnow, freshSnow) * ridgeCrest * backLit * uDaylight * cloudShadow * 0.30;
+            reflectedLight.directDiffuse += (iceSSS + snowSSS);
+
+            // Crisp micro-sparkle on sunlit fresh alpine snow crystals (close/mid camera view)
+            if (freshSnow > 0.20 && uDaylight > 0.25) {
+              float spCell = hash21(floor(vObjPos.xz * 260.0 + viewW.xz * 12.0));
+              float sparkle = smoothstep(0.986, 0.999, spCell) * freshSnow * uDaylight * cloudShadow * (1.0 - smoothstep(2.5, 11.0, length(vObjPos - cameraPosition)));
+              reflectedLight.directSpecular += vec3(1.4, 1.35, 1.25) * sparkle * 0.65;
+            }
+
+            // Live sky + smoke Fresnel mirror reflection & solar shimmer on proglacial Lac Sunwapta!
+            if (isLake > 0.02) {
+              vec2 w1 = vObjPos.xz * 24.0 - uWindDir * uTime * 1.1;
+              vec2 w2 = vObjPos.xz * 44.0 + vec2(uWindDir.y, -uWindDir.x) * uTime * 0.8;
+              float rx = (vnoise(w1) - 0.5) * 0.26 + (vnoise(w2) - 0.5) * 0.16;
+              float rz = (vnoise(w1 + 9.1) - 0.5) * 0.26 + (vnoise(w2 + 4.3) - 0.5) * 0.16;
+              vec3 nW = normalize(vec3(rx, 1.0, rz));
+              float fres = pow(1.0 - max(dot(viewW, nW), 0.0), 3.6);
+              vec3 reflSkyDay = mix(vec3(0.24, 0.44, 0.72), vec3(0.46, 0.39, 0.30), clamp(uSmokeHaze * 0.75, 0.0, 1.0));
+              reflSkyDay = mix(reflSkyDay, vec3(0.90, 0.42, 0.16), uTwilight * 0.55);
+              vec3 reflCol = mix(vec3(0.008, 0.016, 0.036), reflSkyDay, uDaylight);
+              vec3 hVec = normalize(viewW + sDirW);
+              float glint = pow(max(dot(nW, hVec), 0.0), 140.0) * uDaylight * cloudShadow * 2.2;
+              vec3 sunGlintCol = mix(vec3(1.2, 1.02, 0.62), vec3(1.3, 0.52, 0.15), clamp(uSmokeHaze * 0.7 + uTwilight * 0.6, 0.0, 1.0));
+              reflectedLight.indirectSpecular = mix(reflectedLight.indirectSpecular, reflCol * (0.22 + 0.78 * fres), isLake);
+              reflectedLight.directSpecular += sunGlintCol * glint * isLake;
+            }
+          }`
+        )
+        .replace(
           "#include <tonemapping_fragment>",
-          `// Post-lighting Exact Closed-Form Beer-Lambert Exponential Height-Fog + Henyey-Greenstein Mie Wildfire Smoke!
-          // Applied in linear radiance space BEFORE ACESFilmic tone mapping & sRGB conversion so shadowed cliffs lift into luminous milky-amber smoke (true Koschmieder airlight, exact parity with 35 km Rockies ring!).
-          if (uMode < 0.5 && uSmokeHaze > 0.015) {
+          `// Unified Linear-Space Physical Rayleigh Aerial Perspective + 8-Step True 3D Volumetric Ray-Marched Wildfire Smoke!
+          // ZERO flat sheets, ZERO popping — continuous 3D animated valley plumes wrapping around every cliff & glacier ridge!
+          if (uMode < 0.5) {
             vec3 rayVec = vObjPos - cameraPosition;
             float rayLen = length(rayVec);
             vec3 rayDir = rayVec / max(rayLen, 0.001);
-            float H = 1.05 * uExag;
-            float yTop = 2.65 * uExag;
-            float y0 = max(0.0, cameraPosition.y);
-            float y1 = max(0.0, vObjPos.y);
-            float effLen = rayLen;
-            float ya = y0;
-            if (y0 > yTop && y0 > y1 + 0.001) {
-              float tEnter = clamp((y0 - yTop) / (y0 - y1), 0.0, 1.0);
-              effLen = rayLen * (1.0 - tEnter);
-              ya = yTop;
-            } else if (y0 > yTop && y1 >= yTop) {
-              effLen = 0.0;
+            vec3 sDir = normalize(uSunDir);
+
+            // 1. Subtle crisp clear-air alpine Rayleigh aerial perspective (depth cue even on pure blue-sky days!)
+            float rayleighT = clamp((1.0 - exp(-rayLen * 0.015)) * 0.48, 0.0, 0.48);
+            vec3 rayleighDay = mix(vec3(0.26, 0.45, 0.74), vec3(0.28, 0.34, 0.42), uCloudShadowAmt * 0.70);
+            rayleighDay = mix(rayleighDay, vec3(0.68, 0.36, 0.16), uTwilight * 0.42);
+            vec3 rayleighCol = mix(vec3(0.006, 0.012, 0.028), rayleighDay, uDaylight);
+            gl_FragColor.rgb = mix(gl_FragColor.rgb, rayleighCol, rayleighT);
+
+            // 2. True 8-Step 3D Volumetric Ray-Marched Wildfire Smoke (Beer-Lambert + Henyey-Greenstein Mie!)
+            if (uSmokeHaze > 0.015) {
+              float yTop = 2.65 * uExag;
+              float y0 = cameraPosition.y;
+              float y1 = vObjPos.y;
+              float tEnter = 0.0;
+              float tExit = rayLen;
+              bool hitVol = true;
+              if (y0 > yTop && y1 >= yTop) {
+                hitVol = false;
+              } else if (y0 > yTop && y1 < yTop) {
+                tEnter = rayLen * clamp((y0 - yTop) / max(y0 - y1, 0.001), 0.0, 1.0);
+              } else if (y0 < yTop && y1 > yTop) {
+                tExit = rayLen * clamp((yTop - y0) / max(y1 - y0, 0.001), 0.0, 1.0);
+              }
+
+              if (hitVol && tExit > tEnter + 0.02) {
+                float segLen = tExit - tEnter;
+                float stepLen = segLen / 8.0;
+                float H = 0.96 * uExag;
+                float extBase = 0.055 + 0.50 * pow(uSmokeHaze, 0.88);
+                float cosT = dot(rayDir, sDir);
+                float g = 0.62;
+                float hg = (1.0 - g * g) / pow(max(0.22, 1.0 + g * g - 2.0 * g * cosT), 1.5);
+                float sunGlow = clamp((hg - 0.32) * 0.24, 0.0, 0.72);
+
+                vec3 smokeCool = vec3(0.36, 0.36, 0.35);
+                vec3 smokeWarm = vec3(0.68, 0.45, 0.21);
+                vec3 smokeDense = vec3(0.64, 0.29, 0.09);
+                vec3 baseInscatter = mix(smokeCool, smokeWarm, clamp(0.24 + 0.56 * sunGlow + 0.34 * uSmokeHaze, 0.0, 1.0));
+                baseInscatter = mix(baseInscatter, smokeDense, clamp((uSmokeHaze - 0.55) * 0.85, 0.0, 0.52));
+                baseInscatter *= (1.0 - uCloudShadowAmt * 0.20);
+                vec3 nightInscatter = vec3(0.009, 0.010, 0.015);
+
+                float trans = 1.0;
+                vec3 accumLight = vec3(0.0);
+                vec2 windDrift = uWindDir * uTime * 0.042;
+                for (int i = 0; i < 8; i++) {
+                  float t = tEnter + (float(i) + 0.5) * stepLen;
+                  vec3 p = cameraPosition + rayDir * t;
+                  float hAbove = max(0.0, p.y - 0.04 * uExag);
+                  float strat = exp(-hAbove / H);
+                  // True 3D wind-advected silky plume turbulence (drifts gently down the Sunwapta trough!)
+                  vec2 nUv = p.xz * 0.24 - windDrift + vec2(p.y * 0.34, -p.y * 0.26);
+                  float wisp = 0.66 + 0.54 * fbm2(nUv);
+                  float sigma = extBase * strat * wisp;
+                  float stepT = exp(-sigma * stepLen);
+                  // Sunlit upper smoke glows slightly warmer/brighter; deep trapped valley floor is softer milky-cool
+                  float altLit = clamp(0.76 + 0.34 * (hAbove / max(yTop, 0.1)), 0.72, 1.12);
+                  vec3 stepCol = mix(nightInscatter, baseInscatter * altLit, uDaylight);
+                  accumLight += trans * (1.0 - stepT) * stepCol;
+                  trans *= stepT;
+                }
+                float fadeIn = smoothstep(0.015, 0.15, uSmokeHaze);
+                float blendTrans = mix(1.0, max(trans, 0.12), fadeIn);
+                gl_FragColor.rgb = gl_FragColor.rgb * blendTrans + accumLight * fadeIn;
+              }
             }
-            float dya = y1 - ya;
-            float avgExp = abs(dya) < 0.025
-              ? exp(-ya / H)
-              : (exp(-ya / H) - exp(-y1 / H)) / (dya / H);
-            float ext = 0.068 + 0.54 * pow(uSmokeHaze, 0.88);
-            float optDepth = max(0.0, effLen * avgExp * ext);
-            float hazeAmt = clamp((1.0 - exp(-optDepth)) * smoothstep(0.015, 0.16, uSmokeHaze), 0.0, 0.88);
-
-            float cosT = dot(rayDir, normalize(uSunDir));
-            float g = 0.58;
-            float hg = (1.0 - g * g) / pow(max(0.25, 1.0 + g * g - 2.0 * g * cosT), 1.5);
-            float sunGlow = clamp((hg - 0.35) * 0.24, 0.0, 0.68);
-
-            // Linear-space airlight colors (calibrated for ACESFilmicToneMapping -> silky milky warm-amber alpine smoke!)
-            vec3 smokeCool = vec3(0.38, 0.37, 0.35);
-            vec3 smokeWarm = vec3(0.68, 0.45, 0.22);
-            vec3 smokeDense = vec3(0.64, 0.30, 0.10);
-            vec3 hazeDay = mix(smokeCool, smokeWarm, clamp(0.26 + 0.55 * sunGlow + 0.36 * uSmokeHaze, 0.0, 1.0));
-            hazeDay = mix(hazeDay, smokeDense, clamp((uSmokeHaze - 0.52) * 0.85, 0.0, 0.55));
-            hazeDay *= (1.0 - uCloudShadowAmt * 0.22);
-            vec3 hazeNight = vec3(0.010, 0.011, 0.016);
-            gl_FragColor.rgb = mix(gl_FragColor.rgb, mix(hazeNight, hazeDay, uDaylight), hazeAmt);
           }
           #include <tonemapping_fragment>`
         );
@@ -881,8 +1003,8 @@ export class GlacierScene {
   }
 
   _buildSurroundingRockies(ringU16) {
-    // 35 km x 35 km real Copernicus GLO-30 Rocky Mountain horizon seamlessly surrounding the 11x11 km block!
-    // Automatically appears in Vue Webcam, Sur le glacier & Survol (and toggleable in Bloc 3D!) so the horizon NEVER ends abruptly!
+    // 35 km x 35 km real Copernicus GLO-30 Rocky Mountain horizon (320x320, border-snapped to dem_448, + 16-azimuth SVF AO)!
+    // Identical linear-space lighting, aspect snowline, cloud shadows, Rayleigh aerial perspective & 8-step volumetric smoke!
     this.ringMesh = null;
     this.ringGeo = null;
     if (!ringU16 || !this.meta.ring) return;
@@ -896,10 +1018,12 @@ export class GlacierScene {
 
     const nV = G * G;
     const pos = new Float32Array(nV * 3);
+    const uvs = new Float32Array(nV * 2);
     const baseElev = new Float32Array(nV);
     for (let r = 0; r < G; r++) {
       const vFrac = r / (G - 1);
       const z = (vFrac - 0.5) * size;
+      const uvV = 1.0 - vFrac;
       for (let c = 0; c < G; c++) {
         const uFrac = c / (G - 1);
         const x = (uFrac - 0.5) * size;
@@ -910,6 +1034,8 @@ export class GlacierScene {
         pos[idx * 3 + 0] = x;
         pos[idx * 3 + 1] = y0 * this.state.exag;
         pos[idx * 3 + 2] = z;
+        uvs[idx * 2 + 0] = uFrac;
+        uvs[idx * 2 + 1] = uvV;
       }
     }
 
@@ -921,7 +1047,6 @@ export class GlacierScene {
       for (let c = 0; c < G - 1; c++) {
         const x0 = (c / (G - 1) - 0.5) * size;
         const x1 = ((c + 1) / (G - 1) - 0.5) * size;
-        // Skip triangles fully inside the 11x11 km high-res block
         if (Math.abs(x0) < halfCut && Math.abs(x1) < halfCut && Math.abs(z0) < halfCut && Math.abs(z1) < halfCut) continue;
         const i00 = r * G + c, i01 = i00 + 1, i10 = i00 + G, i11 = i10 + 1;
         indices.push(i00, i10, i11, i00, i11, i01);
@@ -930,23 +1055,26 @@ export class GlacierScene {
 
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
     geo.setAttribute("aBaseElev", new THREE.BufferAttribute(baseElev, 1));
     geo.setIndex(indices);
     geo.computeVertexNormals();
     this.ringGeo = geo;
 
     this.ringUniforms = {
+      uRingAoTex: { value: this.ringAoTex },
       uSunDir: { value: this._sunDir.clone() },
       uTime: { value: 0.0 },
       uWindDir: { value: new THREE.Vector2(0.85, -0.52) },
       uCloudShadowAmt: { value: 0.3 },
       uSmokeHaze: { value: 0.0 },
       uDaylight: { value: 0.9 },
+      uTwilight: { value: 0.0 },
       uSnowPackMm: { value: 0.0 },
       uSnowLineM: { value: 3480.0 },
       uZMinM: { value: this.meta.zMinM },
       uExag: { value: this.state.exag },
-      uHalfInner: { value: this.sizeX * 0.5 - 0.03 },
+      uHalfInner: { value: this.sizeX * 0.5 - 0.025 },
       uHalfOuter: { value: size * 0.5 },
       uRingAlpha: { value: 0.0 },
     };
@@ -959,23 +1087,27 @@ export class GlacierScene {
         attribute float aBaseElev;
         varying vec3 vWorldPos;
         varying vec3 vNormal;
+        varying vec2 vRingUv;
         varying float vElevM;
         uniform float uZMinM;
         void main() {
           vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
           vNormal = normalize(normal);
+          vRingUv = uv;
           vElevM = uZMinM + aBaseElev * 1000.0;
           gl_Position = projectionMatrix * viewMatrix * vec4(vWorldPos, 1.0);
         }
       `,
       fragmentShader: `
         precision highp float;
+        uniform sampler2D uRingAoTex;
         uniform vec3 uSunDir;
         uniform float uTime;
         uniform vec2 uWindDir;
         uniform float uCloudShadowAmt;
         uniform float uSmokeHaze;
         uniform float uDaylight;
+        uniform float uTwilight;
         uniform float uSnowPackMm;
         uniform float uSnowLineM;
         uniform float uExag;
@@ -984,6 +1116,7 @@ export class GlacierScene {
         uniform float uRingAlpha;
         varying vec3 vWorldPos;
         varying vec3 vNormal;
+        varying vec2 vRingUv;
         varying float vElevM;
 
         float hash21(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
@@ -996,87 +1129,121 @@ export class GlacierScene {
           for (int i = 0; i < 4; i++) { v += a * vnoise(p); p = p * 2.05 + vec2(7.3, 11.1); a *= 0.5; }
           return v;
         }
+        float fbm2(vec2 p) {
+          return 0.65 * vnoise(p) + 0.35 * vnoise(p * 2.13 + vec2(5.7, 9.2));
+        }
 
         void main() {
           if (uRingAlpha < 0.02) discard;
-          // Exact cutout inside the 11x11 km Sentinel-2 high-res block
           float inBox = max(abs(vWorldPos.x), abs(vWorldPos.z));
           if (inBox < uHalfInner) discard;
-          // Smooth radial fade into sky at the outer 35 km rim
-          float outerFade = 1.0 - smoothstep(uHalfOuter * 0.72, uHalfOuter * 0.99, length(vWorldPos.xz));
+          float outerFade = 1.0 - smoothstep(uHalfOuter * 0.70, uHalfOuter * 0.99, length(vWorldPos.xz));
           if (outerFade < 0.01) discard;
+
+          vec3 aoMap = texture2D(uRingAoTex, vRingUv).rgb;
+          float svfAo = aoMap.r;
+          float topoCurv = aoMap.g;
+          float warmAspect = aoMap.b;
 
           vec3 N = normalize(vNormal);
           float slopeUp = clamp(N.y, 0.0, 1.0);
           float n = fbm(vWorldPos.xz * 0.85);
+          float strata = sin(vElevM * 0.09 + n * 4.2) * 0.14 * (1.0 - slopeUp);
 
-          // Linear-space Canadian Rockies elevation bands matching Sentinel-2 block reflectance (conifer -> limestone scree -> alpine snow/glaciers)
-          vec3 forest = vec3(0.022, 0.044, 0.024);
-          vec3 rock = mix(vec3(0.065, 0.056, 0.048), vec3(0.165, 0.145, 0.125), n);
-          vec3 alpineSnow = vec3(0.56, 0.64, 0.74);
+          // Linear-space Rockies palette calibrated to Sentinel-2 block reflectance
+          vec3 forest = mix(vec3(0.016, 0.036, 0.020), vec3(0.032, 0.056, 0.030), n);
+          vec3 rock = mix(vec3(0.058, 0.050, 0.044), vec3(0.165, 0.145, 0.125), clamp(n + strata, 0.0, 1.0));
+          vec3 alpineSnow = vec3(0.58, 0.66, 0.76);
 
-          float treeLine = smoothstep(1920.0, 2180.0, vElevM + (n - 0.5) * 180.0);
+          float treeLine = smoothstep(1920.0, 2220.0, vElevM + (n - 0.5) * 180.0 - (warmAspect - 0.5) * 120.0);
           vec3 baseCol = mix(forest, rock, treeLine);
-          float permSnow = smoothstep(2620.0, 2950.0, vElevM + (n - 0.5) * 240.0) * smoothstep(0.38, 0.74, slopeUp);
-          baseCol = mix(baseCol, alpineSnow, permSnow * 0.86);
+          float aspectBias = (warmAspect - 0.5) * 180.0;
+          float gullyBias = (topoCurv - 0.5) * 140.0;
+          float permSnow = smoothstep(2580.0, 2920.0, vElevM - aspectBias - gullyBias + (n - 0.5) * 200.0) * smoothstep(0.34, 0.72, slopeUp + (0.5 - topoCurv) * 0.20);
+          baseCol = mix(baseCol, alpineSnow, permSnow * 0.88);
 
-          // Live fresh snow whitening synchronized with the main massif!
+          // Synchronized aspect-aware fresh snow whitening!
           float packCover = 1.0 - exp(-max(uSnowPackMm, 0.0) / 2.6);
-          float freshMask = packCover * smoothstep(uSnowLineM - 120.0, uSnowLineM + 160.0, vElevM + (n - 0.5) * 140.0) * smoothstep(0.30, 0.70, slopeUp + 0.16 * n);
-          baseCol = mix(baseCol, vec3(0.64, 0.72, 0.82), clamp(freshMask * 0.92, 0.0, 0.92));
+          float freshMask = packCover * smoothstep(uSnowLineM - 120.0, uSnowLineM + 160.0, vElevM - aspectBias - gullyBias + (n - 0.5) * 130.0) * smoothstep(0.28, 0.68, slopeUp + 0.16 * n);
+          baseCol = mix(baseCol, vec3(0.66, 0.74, 0.84), clamp(freshMask * 0.92, 0.0, 0.92));
 
-          // Direct sun + sky hemisphere + moving cloud shadows (calibrated to MeshStandardMaterial Lambertian BRDF)
+          // Direct sun + 16-azimuth SVF AO + alpine blue shadow bounce + moving cloud shadows!
           vec3 sDir = normalize(uSunDir);
           float ndl = max(dot(N, sDir), 0.0);
           float cloudSh = 1.0;
           if (uCloudShadowAmt > 0.08 && uDaylight > 0.08) {
-            vec2 shP = vWorldPos.xz + sDir.xz * ((3.3 - vWorldPos.y) / max(sDir.y, 0.24));
-            float cn = fbm(shP * 0.26 - uWindDir * uTime * 0.065);
+            vec2 shP = vWorldPos.xz + sDir.xz * ((3.5 - vWorldPos.y) / max(sDir.y, 0.24));
+            float cn = fbm(shP * 0.25 - uWindDir * uTime * 0.062);
             cloudSh = 1.0 - smoothstep(0.66 - uCloudShadowAmt * 0.42, 0.84, cn) * uCloudShadowAmt * 0.45 * uDaylight;
           }
-          vec3 sunTint = mix(vec3(0.14, 0.24, 0.48), vec3(1.05, 0.88, 0.54), uDaylight);
-          vec3 ambCol = mix(vec3(0.015, 0.028, 0.065), vec3(0.28, 0.38, 0.52), uDaylight);
-          vec3 col = baseCol * (ambCol + sunTint * ndl * (0.20 + 0.92 * uDaylight) * cloudSh);
+          float aoWeight = mix(0.45, 1.06, pow(clamp(svfAo, 0.0, 1.0), 1.15));
+          vec3 sunTint = mix(vec3(0.14, 0.24, 0.48), mix(vec3(1.08, 0.88, 0.52), vec3(1.18, 0.54, 0.20), uTwilight * 0.65), uDaylight);
+          vec3 ambCol = mix(vec3(0.015, 0.028, 0.065), vec3(0.26, 0.38, 0.54), uDaylight) * aoWeight;
+          vec3 col = baseCol * (ambCol + sunTint * ndl * (0.20 + 0.94 * uDaylight) * cloudSh);
 
-          // Distance atmospheric perspective + identical analytical Beer-Lambert + Henyey-Greenstein wildfire smoke!
+          // Exact same Rayleigh aerial perspective + 8-step 3D volumetric ray-marched smoke as terrainMesh!
           vec3 rayVec = vWorldPos - cameraPosition;
           float rayLen = length(rayVec);
           vec3 rayDir = rayVec / max(rayLen, 0.001);
-          float airMist = 1.0 - exp(-rayLen * 0.032);
-          vec3 airCol = mix(vec3(0.010, 0.018, 0.042), vec3(0.34, 0.48, 0.68), uDaylight);
-          col = mix(col, airCol, clamp(airMist * 0.62, 0.0, 0.68));
+
+          float rayleighT = clamp((1.0 - exp(-rayLen * 0.024)) * 0.68, 0.0, 0.72);
+          vec3 rayleighDay = mix(vec3(0.28, 0.48, 0.76), vec3(0.29, 0.35, 0.43), uCloudShadowAmt * 0.72);
+          rayleighDay = mix(rayleighDay, vec3(0.74, 0.38, 0.16), uTwilight * 0.45);
+          col = mix(col, mix(vec3(0.006, 0.012, 0.028), rayleighDay, uDaylight), rayleighT);
 
           if (uSmokeHaze > 0.015) {
-            float H = 1.05 * uExag;
             float yTop = 2.65 * uExag;
-            float y0 = max(0.0, cameraPosition.y);
-            float y1 = max(0.0, vWorldPos.y);
-            float effLen = rayLen;
-            float ya = y0;
-            if (y0 > yTop && y0 > y1 + 0.001) {
-              effLen = rayLen * (1.0 - clamp((y0 - yTop) / (y0 - y1), 0.0, 1.0));
-              ya = yTop;
-            } else if (y0 > yTop && y1 >= yTop) {
-              effLen = 0.0;
+            float y0 = cameraPosition.y;
+            float y1 = vWorldPos.y;
+            float tEnter = 0.0;
+            float tExit = rayLen;
+            bool hitVol = true;
+            if (y0 > yTop && y1 >= yTop) {
+              hitVol = false;
+            } else if (y0 > yTop && y1 < yTop) {
+              tEnter = rayLen * clamp((y0 - yTop) / max(y0 - y1, 0.001), 0.0, 1.0);
+            } else if (y0 < yTop && y1 > yTop) {
+              tExit = rayLen * clamp((yTop - y0) / max(y1 - y0, 0.001), 0.0, 1.0);
             }
-            float dya = y1 - ya;
-            float avgExp = abs(dya) < 0.025 ? exp(-ya / H) : (exp(-ya / H) - exp(-y1 / H)) / (dya / H);
-            float optDepth = max(0.0, effLen * avgExp * (0.068 + 0.54 * pow(uSmokeHaze, 0.88)));
-            float hazeAmt = clamp((1.0 - exp(-optDepth)) * smoothstep(0.015, 0.16, uSmokeHaze), 0.0, 0.92);
+            if (hitVol && tExit > tEnter + 0.02) {
+              float segLen = min(tExit - tEnter, 24.0);
+              float stepLen = segLen / 8.0;
+              float H = 0.96 * uExag;
+              float extBase = 0.055 + 0.50 * pow(uSmokeHaze, 0.88);
+              float cosT = dot(rayDir, sDir);
+              float g = 0.62;
+              float hg = (1.0 - g * g) / pow(max(0.22, 1.0 + g * g - 2.0 * g * cosT), 1.5);
+              float sunGlow = clamp((hg - 0.32) * 0.24, 0.0, 0.72);
 
-            float cosT = dot(rayDir, sDir);
-            float g = 0.58;
-            float hg = (1.0 - g * g) / pow(max(0.25, 1.0 + g * g - 2.0 * g * cosT), 1.5);
-            float sunGlow = clamp((hg - 0.35) * 0.24, 0.0, 0.68);
+              vec3 smokeCool = vec3(0.36, 0.36, 0.35);
+              vec3 smokeWarm = vec3(0.68, 0.45, 0.21);
+              vec3 smokeDense = vec3(0.64, 0.29, 0.09);
+              vec3 baseInscatter = mix(smokeCool, smokeWarm, clamp(0.24 + 0.56 * sunGlow + 0.34 * uSmokeHaze, 0.0, 1.0));
+              baseInscatter = mix(baseInscatter, smokeDense, clamp((uSmokeHaze - 0.55) * 0.85, 0.0, 0.52));
+              baseInscatter *= (1.0 - uCloudShadowAmt * 0.20);
+              vec3 nightInscatter = vec3(0.009, 0.010, 0.015);
 
-            vec3 smokeCool = vec3(0.38, 0.37, 0.35);
-            vec3 smokeWarm = vec3(0.68, 0.45, 0.22);
-            vec3 smokeDense = vec3(0.64, 0.30, 0.10);
-            vec3 hazeDay = mix(smokeCool, smokeWarm, clamp(0.26 + 0.55 * sunGlow + 0.36 * uSmokeHaze, 0.0, 1.0));
-            hazeDay = mix(hazeDay, smokeDense, clamp((uSmokeHaze - 0.52) * 0.85, 0.0, 0.55));
-            hazeDay *= (1.0 - uCloudShadowAmt * 0.22);
-            vec3 hazeNight = vec3(0.010, 0.011, 0.016);
-            col = mix(col, mix(hazeNight, hazeDay, uDaylight), hazeAmt);
+              float trans = 1.0;
+              vec3 accumLight = vec3(0.0);
+              vec2 windDrift = uWindDir * uTime * 0.042;
+              for (int i = 0; i < 8; i++) {
+                float t = tEnter + (float(i) + 0.5) * stepLen;
+                vec3 p = cameraPosition + rayDir * t;
+                float hAbove = max(0.0, p.y - 0.04 * uExag);
+                float strat = exp(-hAbove / H);
+                vec2 nUv = p.xz * 0.24 - windDrift + vec2(p.y * 0.34, -p.y * 0.26);
+                float wisp = 0.66 + 0.54 * fbm2(nUv);
+                float sigma = extBase * strat * wisp;
+                float stepT = exp(-sigma * stepLen);
+                float altLit = clamp(0.76 + 0.34 * (hAbove / max(yTop, 0.1)), 0.72, 1.12);
+                vec3 stepCol = mix(nightInscatter, baseInscatter * altLit, uDaylight);
+                accumLight += trans * (1.0 - stepT) * stepCol;
+                trans *= stepT;
+              }
+              float fadeIn = smoothstep(0.015, 0.15, uSmokeHaze);
+              float blendTrans = mix(1.0, max(trans, 0.08), fadeIn);
+              col = col * blendTrans + accumLight * fadeIn;
+            }
           }
 
           gl_FragColor = vec4(col, outerFade * uRingAlpha);
@@ -1092,157 +1259,10 @@ export class GlacierScene {
     this.scene.add(this.ringMesh);
   }
 
-  _buildVolumetricSmoke() {
-    this.smokeGroup = new THREE.Group();
-    this.smokeSharedUniforms = {
-      uTime: { value: 0.0 },
-      uDensity: { value: 0.45 },
-      uWindDir: { value: new THREE.Vector2(0.85, -0.52) },
-      uSunDir: { value: this._sunDir.clone() },
-      uSunPower: { value: 0.6 },
-      uWetFrac: { value: 0.0 },
-      uExag: { value: this.state.exag },
-    };
-
-    const S = 72;
-    const basePos = new Float32Array(S * S * 3);
-    const baseDem = new Float32Array(S * S);
-    const uvs = new Float32Array(S * S * 2);
-    for (let r = 0; r < S; r++) {
-      const v = r / (S - 1), z = (v - 0.5) * this.sizeY * 1.12;
-      for (let c = 0; c < S; c++) {
-        const u = c / (S - 1), x = (u - 0.5) * this.sizeX * 1.12;
-        const idx = r * S + c;
-        basePos[idx * 3 + 0] = x; basePos[idx * 3 + 1] = 0; basePos[idx * 3 + 2] = z;
-        baseDem[idx] = this._sampleDemXZ(x, z);
-        uvs[idx * 2 + 0] = u; uvs[idx * 2 + 1] = v;
-      }
-    }
-    const idxArr = [];
-    for (let r = 0; r < S - 1; r++) {
-      for (let c = 0; c < S - 1; c++) {
-        const a = r * S + c, b = a + 1, cc = a + S, d = cc + 1;
-        idxArr.push(a, cc, d, a, d, b);
-      }
-    }
-    const sharedGeo = new THREE.BufferGeometry();
-    sharedGeo.setAttribute("position", new THREE.BufferAttribute(basePos, 3));
-    sharedGeo.setAttribute("aDemY0", new THREE.BufferAttribute(baseDem, 1));
-    sharedGeo.setAttribute("uv", new THREE.BufferAttribute(uvs, 2));
-    sharedGeo.setIndex(idxArr);
-
-    // Subtle silky wind-drifting valley smoke wisps (ONLY 2 ultra-soft laminar streams — zero stacked horizontal crêpes!
-    // Primary wildfire smoke depth & visibility attenuation is rendered continuously by the exact exponential radiative-transfer shader!)
-    const layers = [
-      { heightAbove: 0.22, follow: 0.85, alpha: 0.11, scale: 1.6, speed: 0.58, seed: 1.3 },
-      { heightAbove: 0.58, follow: 0.62, alpha: 0.09, scale: 1.2, speed: 0.78, seed: 7.9 },
-    ];
-
-    layers.forEach((cfg) => {
-      const mat = new THREE.ShaderMaterial({
-        transparent: true,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-        uniforms: {
-          ...this.smokeSharedUniforms,
-          uHeightAbove: { value: cfg.heightAbove },
-          uFollow: { value: cfg.follow },
-          uLayerAlpha: { value: cfg.alpha },
-          uNoiseScale: { value: cfg.scale },
-          uSpeedMul: { value: cfg.speed },
-          uSeed: { value: cfg.seed },
-        },
-        vertexShader: `
-          attribute float aDemY0;
-          uniform float uTime;
-          uniform vec2 uWindDir;
-          uniform float uExag;
-          uniform float uHeightAbove;
-          uniform float uFollow;
-          uniform float uSpeedMul;
-          uniform float uSeed;
-          varying vec2 vUv;
-          varying vec3 vWorldPos;
-          varying float vElevNorm;
-          void main() {
-            vUv = uv;
-            float baseY = mix(0.75 * uExag, aDemY0 * uExag, uFollow) + uHeightAbove;
-            float phase = dot(position.xz, uWindDir) * 0.65 - uTime * 0.45 * uSpeedMul + uSeed;
-            float billow = sin(phase) * 0.08 + cos(position.x * 0.55 - position.z * 0.45 + uTime * 0.3) * 0.06;
-            vec3 pos = vec3(position.x, baseY + billow, position.z);
-            vec4 wp = modelMatrix * vec4(pos, 1.0);
-            vWorldPos = wp.xyz;
-            vElevNorm = clamp(aDemY0 / 1.65, 0.0, 1.0);
-            gl_Position = projectionMatrix * viewMatrix * wp;
-          }
-        `,
-        fragmentShader: `
-          precision highp float;
-          uniform float uTime;
-          uniform float uDensity;
-          uniform vec2 uWindDir;
-          uniform vec3 uSunDir;
-          uniform float uSunPower;
-          uniform float uWetFrac;
-          uniform float uLayerAlpha;
-          uniform float uNoiseScale;
-          uniform float uSpeedMul;
-          uniform float uSeed;
-          varying vec2 vUv;
-          varying vec3 vWorldPos;
-          varying float vElevNorm;
-
-          float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-          float noise(vec2 p) {
-            vec2 i = floor(p); vec2 f = fract(p); f = f*f*(3.0-2.0*f);
-            return mix(mix(hash(i), hash(i+vec2(1,0)), f.x), mix(hash(i+vec2(0,1)), hash(i+vec2(1,1)), f.x), f.y);
-          }
-          float fbm(vec2 p) {
-            float v=0.0, a=0.5;
-            for (int i=0; i<5; i++) { v += a*noise(p); p = p*2.04+vec2(7.3,11.9); a*=0.5; }
-            return v;
-          }
-          void main() {
-            if (uDensity < 0.02) discard;
-            // Fade smoke very close to camera so first-person glacier view stays breathable!
-            float camDist = length(vWorldPos - cameraPosition);
-            float nearFade = smoothstep(0.35, 1.6, camDist);
-
-            vec2 c = vUv * 2.0 - 1.0;
-            float edge = 1.0 - smoothstep(0.42, 0.96, max(abs(c.x), abs(c.y)) * 0.55 + length(c) * 0.55);
-            vec2 drift = uWindDir * uTime * 0.16 * uSpeedMul;
-            vec2 q = vUv * uNoiseScale - drift + vec2(uSeed);
-            vec2 warp = vec2(fbm(q + vec2(1.7, 9.2)), fbm(q + vec2(8.3, 2.8)));
-            float n = fbm(q + 0.65 * warp - drift * 0.35);
-
-            float valleyPool = 1.25 - 0.42 * vElevNorm;
-            float cloud = smoothstep(0.18, 0.76, n * valleyPool);
-            // Smooth luminous Mie-backlit wildfire smoke haze (matches real webcam milky warm-amber valley smoke, not dark muddy smudges!)
-            float smokeBoost = pow(clamp(uDensity, 0.0, 1.0), 0.72);
-            float alpha = (0.28 + 0.72 * cloud) * edge * nearFade * smokeBoost * uLayerAlpha * 1.42;
-            if (alpha < 0.004) discard;
-
-            vec3 viewDir = normalize(vWorldPos - cameraPosition);
-            float fwd = pow(max(dot(viewDir, normalize(uSunDir)), 0.0), 3.0) * uSunPower;
-            vec3 baseDark = vec3(0.56, 0.46, 0.36);
-            vec3 baseLit  = vec3(0.88, 0.72, 0.50);
-            vec3 heavyTint = vec3(0.86, 0.54, 0.24);
-            vec3 col = mix(baseDark, baseLit, clamp(0.32 + 0.58 * uSunPower + 0.20 * cloud, 0.0, 1.0));
-            col = mix(col, heavyTint, clamp((uDensity - 0.45) * 0.95, 0.0, 0.65));
-            col += vec3(0.45, 0.28, 0.10) * fwd;
-            gl_FragColor = vec4(col, clamp(alpha, 0.0, 0.72));
-          }
-        `,
-      });
-      this.smokeGroup.add(new THREE.Mesh(sharedGeo, mat));
-    });
-    this.scene.add(this.smokeGroup);
-  }
-
   _buildCloudDeck() {
-    // REAL 3D VOLUMETRIC MOUNTAIN CLOUDS!
-    // 64 instanced 3D camera-facing sculpted FBM cumulus/nimbus puffs with analytical sun-direction shading,
-    // shaded storm undersides, and Mie silver-lining glow — driven directly by real hourly ERA5 cloudLow & cloudMid!
+    // REAL MULTI-LOBE 3D VOLUMETRIC MOUNTAIN CLOUDS!
+    // 96 sculpted FBM puffs organized into 16 coherent Rocky Mountain cumulus & orographic clusters,
+    // with soft DEM terrain-intersection fade (wrapping naturally around peaks!) & golden sunset rim lighting!
     this.cloudGroup = new THREE.Group();
     this.cloudUniforms = {
       uTime: { value: 0.0 },
@@ -1263,36 +1283,51 @@ export class GlacierScene {
       uDemTex: { value: this.demTex },
     };
 
-    const COUNT = 64;
+    const CLUSTERS = 16;
+    const LOBES_PER = 6;
+    const COUNT = CLUSTERS * LOBES_PER; // 96 coherent multi-lobe volumetric cloud puffs
     const quad = new THREE.PlaneGeometry(1, 1, 1, 1);
     const geo = new THREE.InstancedBufferGeometry();
     geo.index = quad.index;
     geo.attributes.position = quad.attributes.position;
     geo.attributes.uv = quad.attributes.uv;
 
-    const aOrigin = new Float32Array(COUNT * 3); // [x, altOffset, z]
-    const aCloudAttr = new Float32Array(COUNT * 4); // [width, height, threshold (0..1), layerType (0=low orographic, 1=mid deck)]
-    const aSeed = new Float32Array(COUNT * 2); // [noiseSeed, driftMul]
+    const aOrigin = new Float32Array(COUNT * 3);
+    const aCloudAttr = new Float32Array(COUNT * 4);
+    const aSeed = new Float32Array(COUNT * 2);
 
-    for (let i = 0; i < COUNT; i++) {
-      const isMid = i >= 34 ? 1.0 : 0.0;
-      const idxInLayer = isMid > 0.5 ? (i - 34) : i;
-      const layerN = isMid > 0.5 ? (COUNT - 34) : 34;
+    for (let c = 0; c < CLUSTERS; c++) {
+      const isMid = c >= 8 ? 1.0 : 0.0;
+      const idxInLayer = isMid > 0.5 ? (c - 8) : c;
+      const layerN = 8;
       const ring = Math.sqrt((idxInLayer + 0.45) / layerN);
-      const ang = idxInLayer * 2.3999632 + (Math.random() - 0.5) * 0.45;
+      const ang = idxInLayer * 2.3999632 + (isMid * 1.1) + (Math.random() - 0.5) * 0.4;
       const spread = isMid > 0.5 ? 0.68 : 0.54;
-      aOrigin[i * 3 + 0] = Math.cos(ang) * ring * this.sizeX * spread;
-      aOrigin[i * 3 + 1] = isMid > 0.5 ? (3.45 + Math.random() * 0.85) : (0.55 + Math.random() * 0.95);
-      aOrigin[i * 3 + 2] = Math.sin(ang) * ring * this.sizeY * spread;
+      const cx = Math.cos(ang) * ring * this.sizeX * spread;
+      const cz = Math.sin(ang) * ring * this.sizeY * spread;
+      const cy = isMid > 0.5 ? (3.55 + Math.random() * 0.85) : (0.60 + Math.random() * 0.85);
+      const cRank = (idxInLayer + 0.5) / layerN;
+      const cDrift = 0.78 + Math.random() * 0.42;
 
-      aCloudAttr[i * 4 + 0] = isMid > 0.5 ? (4.6 + Math.random() * 3.8) : (3.0 + Math.random() * 2.8);
-      aCloudAttr[i * 4 + 1] = isMid > 0.5 ? (1.6 + Math.random() * 1.1) : (1.35 + Math.random() * 1.05);
-      // Deterministic rank threshold so clouds populate naturally from sparse cumulus (20%) to full overcast (100%)
-      aCloudAttr[i * 4 + 2] = (idxInLayer + 0.5) / layerN;
-      aCloudAttr[i * 4 + 3] = isMid;
+      for (let l = 0; l < LOBES_PER; l++) {
+        const i = c * LOBES_PER + l;
+        const isCore = l === 0;
+        const lAng = (l / (LOBES_PER - 1)) * Math.PI * 2.0 + Math.random() * 0.6;
+        const lRad = isCore ? 0.0 : (0.75 + Math.random() * 1.15) * (isMid > 0.5 ? 1.25 : 0.92);
+        aOrigin[i * 3 + 0] = cx + Math.cos(lAng) * lRad;
+        aOrigin[i * 3 + 1] = cy + (isCore ? 0.28 : (Math.random() - 0.42) * 0.38);
+        aOrigin[i * 3 + 2] = cz + Math.sin(lAng) * lRad;
 
-      aSeed[i * 2 + 0] = Math.random() * 47.0;
-      aSeed[i * 2 + 1] = 0.72 + Math.random() * 0.55;
+        const wBase = isMid > 0.5 ? (isCore ? 5.2 : 3.4 + Math.random() * 2.2) : (isCore ? 3.8 : 2.3 + Math.random() * 1.7);
+        const hBase = isMid > 0.5 ? (isCore ? 2.0 : 1.3 + Math.random() * 0.7) : (isCore ? 1.75 : 1.1 + Math.random() * 0.65);
+        aCloudAttr[i * 4 + 0] = wBase;
+        aCloudAttr[i * 4 + 1] = hBase;
+        aCloudAttr[i * 4 + 2] = Math.max(0.04, Math.min(0.98, cRank + (l - 2.5) * 0.025));
+        aCloudAttr[i * 4 + 3] = isMid;
+
+        aSeed[i * 2 + 0] = Math.random() * 53.0;
+        aSeed[i * 2 + 1] = cDrift;
+      }
     }
     geo.setAttribute("aOrigin", new THREE.InstancedBufferAttribute(aOrigin, 3));
     geo.setAttribute("aCloudAttr", new THREE.InstancedBufferAttribute(aCloudAttr, 4));
@@ -1321,6 +1356,7 @@ export class GlacierScene {
         varying vec2 vUv;
         varying vec3 vWorldPos;
         varying vec3 vCenter;
+        varying float vGroundY;
         varying float vOpacity;
         varying float vSeed;
         varying float vIsMid;
@@ -1332,15 +1368,15 @@ export class GlacierScene {
           vIsMid = isMid;
           float cover = isMid > 0.5 ? max(uCloudMid, uStormIntensity * 0.82) : max(uCloudLow, uStormIntensity * 0.78);
           float rank = aCloudAttr.z;
-          // Smoothly bring cloud clusters into existence as real ERA5 cover increases!
           float vis = smoothstep(rank - 0.18, rank + 0.14, cover * 1.12);
           if (vis < 0.01) {
             vOpacity = 0.0;
+            vGroundY = 0.0;
             gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
             return;
           }
 
-          float domain = isMid > 0.5 ? 16.0 : 13.0;
+          float domain = isMid > 0.5 ? 18.0 : 14.5;
           vec2 drift = uWindDir * uTime * (0.09 + 0.03 * uWindSpeed) * aSeed.y * (isMid > 0.5 ? 1.25 : 0.85);
           vec2 cxz = mod(aOrigin.xz + drift + domain * 0.5, domain) - domain * 0.5;
 
@@ -1350,26 +1386,27 @@ export class GlacierScene {
           float exagOff = max(0.0, (uExag - 1.3) * 1.35);
           float cy = isMid > 0.5
             ? (aOrigin.y + 0.35 - uStormIntensity * 0.65 + exagOff)
-            : max(groundY + 1.15, groundY + aOrigin.y + 0.65 - uStormIntensity * 0.22);
+            : max(groundY + 0.95, groundY + aOrigin.y + 0.58 - uStormIntensity * 0.25);
 
           vec3 center = vec3(cxz.x, cy, cxz.y);
           vCenter = center;
 
-          // Soft spherical/cylindrical camera billboard so 3D puffs look voluminous from EVERY angle (Bloc 3D & Sur le glacier!)
           vec3 viewDir = normalize(cameraPosition - center);
           vec3 worldUp = vec3(0.0, 1.0, 0.0);
           vec3 right = normalize(cross(worldUp, viewDir));
           vec3 up = normalize(mix(worldUp, cross(viewDir, right), 0.55));
 
-          float puffGrow = 0.82 + 0.36 * cover + 0.22 * uStormIntensity;
+          float puffGrow = 0.84 + 0.34 * cover + 0.20 * uStormIntensity;
           vec3 wp = center + right * (position.x * aCloudAttr.x * puffGrow) + up * (position.y * aCloudAttr.y * puffGrow);
           vWorldPos = wp;
 
-          // Keep puffs from popping harshly right inside the viewer lens
+          vec2 vDemUv = clamp(wp.xz / uSizeXZ + 0.5, 0.002, 0.998);
+          vGroundY = texture2D(uDemTex, vDemUv).r * uZRangeKm * uExag;
+
           float camDist = length(center - cameraPosition);
           float nearFade = smoothstep(0.65, 2.1, camDist);
           float edgeDom = 1.0 - smoothstep(domain * 0.34, domain * 0.52, max(abs(cxz.x), abs(cxz.y)));
-          vOpacity = vis * nearFade * edgeDom * (0.44 + 0.34 * cover);
+          vOpacity = vis * nearFade * edgeDom * (0.34 + 0.30 * cover);
           gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
         }
       `,
@@ -1385,6 +1422,7 @@ export class GlacierScene {
         varying vec2 vUv;
         varying vec3 vWorldPos;
         varying vec3 vCenter;
+        varying float vGroundY;
         varying float vOpacity;
         varying float vSeed;
         varying float vIsMid;
@@ -1402,35 +1440,42 @@ export class GlacierScene {
 
         void main() {
           if (vOpacity < 0.008) discard;
-          // Sculpted cumulus silhouette: flatter condensation base at bottom, billowy cauliflower crown at top!
+          // Soft terrain-proximity fade so low orographic clouds wrap organically around mountain peaks without hard clipping!
+          float peakSoft = smoothstep(-0.08, 0.52, vWorldPos.y - vGroundY);
+          if (peakSoft < 0.01) discard;
+
           vec2 p = vUv * 2.0 - 1.0;
-          float baseFlat = p.y < 0.0 ? p.y * 1.48 : p.y * 0.92;
-          float radial = length(vec2(p.x * 0.95, baseFlat));
+          float baseFlat = p.y < 0.0 ? p.y * 1.52 : p.y * 0.90;
+          float radial = length(vec2(p.x * 0.94, baseFlat));
           if (radial > 1.05) discard;
 
-          vec2 q = vUv * 3.1 + vec2(vSeed, vSeed * 0.37) + vec2(uTime * 0.025, 0.0);
-          float n = fbm(q + 0.45 * vec2(fbm(q + 2.1), fbm(q + 6.4)));
-          float shape = (1.0 - smoothstep(0.18, 0.98, radial)) * smoothstep(0.24, 0.78, n + (1.0 - radial) * 0.42);
-          float alpha = shape * vOpacity;
+          vec2 q = vUv * 3.2 + vec2(vSeed, vSeed * 0.37) + vec2(uTime * 0.022, 0.0);
+          float n = fbm(q + 0.48 * vec2(fbm(q + 2.1), fbm(q + 6.4)));
+          float shape = (1.0 - smoothstep(0.16, 0.98, radial)) * smoothstep(0.24, 0.78, n + (1.0 - radial) * 0.44);
+          float alpha = shape * vOpacity * peakSoft;
           if (alpha < 0.005) discard;
 
-          // Analytical 3D directional lighting (bright sunlit crowns, cool blue-slate shaded cloud bases, Mie silver lining!)
-          float heightShade = clamp(vUv.y * 1.15 - 0.10 + (n - 0.5) * 0.35, 0.0, 1.0);
+          // Directional sunlighting across cloud lobe + powder-effect backlit silver lining!
+          vec3 sDir = normalize(uSunDir);
+          vec3 lobeDir = normalize(vWorldPos - vCenter + vec3(0.0, 0.25, 0.0));
+          float sunSide = clamp(dot(lobeDir, sDir) * 0.5 + 0.5, 0.0, 1.0);
+          float heightShade = clamp(vUv.y * 0.95 + sunSide * 0.32 - 0.15 + (n - 0.5) * 0.30, 0.0, 1.0);
           vec3 rayDir = normalize(vWorldPos - cameraPosition);
-          float fwdMie = pow(max(dot(rayDir, normalize(uSunDir)), 0.0), 5.0) * (1.0 - shape * 0.55) * uDaylight;
+          float fwdMie = pow(max(dot(rayDir, sDir), 0.0), 6.0) * (1.0 - shape * 0.50) * uDaylight;
 
-          // Keep water clouds crisp white / cool silver-blue-gray — NEVER brown — so clouds & amber wildfire smoke stay 100% distinct!
-          vec3 fairTop = mix(vec3(0.95, 0.97, 1.00), vec3(1.00, 0.84, 0.66), uTwilight * 0.45);
-          vec3 fairBot = vec3(0.48, 0.56, 0.68);
-          vec3 stormTop = vec3(0.72, 0.77, 0.84);
-          vec3 stormBot = vec3(0.24, 0.30, 0.39);
+          // Keep water clouds crisp alpine white / silver-blue-slate (NEVER muddy brown) so they separate cleanly from valley wildfire smoke!
+          vec3 fairTop = mix(vec3(0.96, 0.98, 1.00), vec3(1.00, 0.74, 0.48), uTwilight * 0.62);
+          vec3 fairBot = mix(vec3(0.46, 0.55, 0.68), vec3(0.55, 0.42, 0.48), uTwilight * 0.40);
+          vec3 stormTop = vec3(0.70, 0.76, 0.84);
+          vec3 stormBot = vec3(0.22, 0.28, 0.38);
 
           vec3 topCol = mix(fairTop, stormTop, clamp(uStormIntensity * 0.80, 0.0, 1.0));
           vec3 botCol = mix(fairBot, stormBot, clamp(uStormIntensity * 0.85, 0.0, 1.0));
-          vec3 dayCol = mix(botCol, topCol, heightShade * (0.42 + 0.58 * uSunPower));
-          dayCol += vec3(0.44, 0.50, 0.58) * fwdMie * 0.72;
+          vec3 dayCol = mix(botCol, topCol, heightShade * (0.40 + 0.60 * uSunPower));
+          vec3 silverRim = mix(vec3(0.48, 0.54, 0.62), vec3(0.85, 0.52, 0.22), uTwilight * 0.75);
+          dayCol += silverRim * fwdMie * 0.78;
 
-          vec3 nightCol = mix(vec3(0.05, 0.08, 0.14), vec3(0.14, 0.19, 0.28), heightShade);
+          vec3 nightCol = mix(vec3(0.04, 0.07, 0.13), vec3(0.13, 0.18, 0.28), heightShade);
           vec3 col = mix(nightCol, dayCol, uDaylight);
 
           gl_FragColor = vec4(col, alpha);
@@ -2167,7 +2212,6 @@ export class GlacierScene {
     }
     sp.needsUpdate = true;
 
-    this.smokeSharedUniforms.uExag.value = exag;
     this.terrainUniforms.uExag.value = exag;
     this.cloudUniforms.uExag.value = exag;
     this.virgaUniforms.uExag.value = exag;
@@ -2204,7 +2248,6 @@ export class GlacierScene {
   setContours(on) { this.state.contours = on; this.terrainUniforms.uContours.value = on ? 1.0 : 0.0; }
   setShowSmoke(on) {
     this.state.showSmoke = on;
-    this.smokeGroup.visible = on;
     this._updateSolarAndAtmosphere();
   }
   setShowClouds(on) {
@@ -2239,7 +2282,6 @@ export class GlacierScene {
   setMeteorology({
     hour,
     depCumFrac,
-    rfWm2,
     plumeDensity,
     cloudCover,
     cloudLow,
@@ -2259,7 +2301,6 @@ export class GlacierScene {
   }) {
     this.state.hour = hour;
     this.state.depProgress = depCumFrac;
-    this.state.rfWm2 = rfWm2 ?? 0.0;
     this.state.plumeDensity = plumeDensity;
     this.state.cloudCover = cloudCover;
     this.state.cloudLow = cloudLow ?? cloudCover;
@@ -2282,15 +2323,12 @@ export class GlacierScene {
 
     this.terrainUniforms.uWindDir.value.set(wx, wz);
     this.skyUniforms.uWindDir.value.set(wx, wz);
-    this.smokeSharedUniforms.uWindDir.value.set(wx, wz);
     this.cloudUniforms.uWindDir.value.set(wx, wz);
     this.virgaUniforms.uWindDir.value.set(wx, wz);
     this.mistUniforms.uWindDir.value.set(wx, wz);
     this.rainUniforms.uWindDir.value.set(wx, wz);
     this.snowUniforms.uWindDir.value.set(wx, wz);
 
-    this.smokeSharedUniforms.uDensity.value = plumeDensity;
-    this.smokeSharedUniforms.uWetFrac.value = wetFrac;
     this.cloudUniforms.uCloudCover.value = cloudCover;
     this.cloudUniforms.uCloudLow.value = this.state.cloudLow;
     this.cloudUniforms.uCloudMid.value = this.state.cloudMid;
@@ -2320,7 +2358,6 @@ export class GlacierScene {
 
   _syncSurfaceUniforms() {
     this.terrainUniforms.uDepCumFrac.value = this.state.compareClean ? 0.0 : this.state.depProgress;
-    this.terrainUniforms.uRfNorm.value = this.state.compareClean ? 0.0 : Math.min(1.0, Math.max(0.0, this.state.rfWm2 / 52.0));
     this.terrainUniforms.uRainSnowM.value = this.state.rainSnowM;
     this.terrainUniforms.uSnowLineM.value = this.state.compareClean ? 3600.0 : this.state.snowLineM;
     this.terrainUniforms.uSnowPackMm.value = this.state.compareClean ? 0.0 : this.state.snowPackMm;
@@ -2343,7 +2380,6 @@ export class GlacierScene {
     const skyElR = (Math.max(-6, rawEl) * Math.PI) / 180;
     const lightElR = (lightEl * Math.PI) / 180;
 
-    // Sky sun direction (can dip below horizon cleanly for sunrise/sunset twilight!)
     this._sunDir.set(
       Math.cos(skyElR) * Math.sin(azR),
       Math.sin(skyElR),
@@ -2356,7 +2392,6 @@ export class GlacierScene {
       dist * Math.sin(lightElR),
       -dist * Math.cos(lightElR) * Math.cos(azR)
     );
-    this.smokeSharedUniforms.uSunDir.value.copy(this._sunDir);
     this.cloudUniforms.uSunDir.value.copy(this._sunDir);
     this.skyUniforms.uSunDir.value.copy(this._sunDir);
 
@@ -2369,7 +2404,7 @@ export class GlacierScene {
 
     this.skyUniforms.uDaylight.value = dayFactor;
     this.skyUniforms.uTwilight.value = twilight;
-    this.skyUniforms.uSmoke.value = smoke;
+    this.skyUniforms.uSmoke.value = this.state.compareClean ? 0.0 : smoke;
     this.skyUniforms.uCloud.value = cloud;
     this.skyUniforms.uCloudMid.value = this.state.showClouds ? this.state.cloudMid : 0.0;
     this.skyUniforms.uCloudHigh.value = this.state.showClouds ? this.state.cloudHigh : 0.0;
@@ -2379,7 +2414,6 @@ export class GlacierScene {
     this.cloudUniforms.uTwilight.value = twilight;
     this.cloudUniforms.uSmoke.value = smoke;
 
-    // Update physical 3D Sun orb along the visible solar arc over Athabasca (neatly below top HUD bar!)
     const arcR = 7.4;
     const orbEl = (Math.max(1.0, rawEl * 0.82) * Math.PI) / 180;
     this.sunOrb.position.set(
@@ -2394,15 +2428,18 @@ export class GlacierScene {
     this.sunOrbUniforms.uTwilight.value = twilight;
     this.sunArcMat.opacity = 0.08 + 0.18 * dayFactor * trans;
 
-    // Feed live smoke optical haze, sun vector, cloud shadows & daylight into terrain + 35 km Rockies horizon!
+    // Feed live 3D volumetric smoke, sun vector, twilight, cloud shadows & daylight into terrain + 35 km Rockies!
     const shAmt = this.state.showClouds ? Math.max(this.state.cloudLow, this.state.cloudMid) : 0.0;
-    this.terrainUniforms.uSmokeHaze.value = this.state.compareClean ? 0.0 : smoke;
+    const activeSmoke = this.state.compareClean ? 0.0 : smoke;
+    this.terrainUniforms.uSmokeHaze.value = activeSmoke;
     this.terrainUniforms.uDaylight.value = dayFactor;
+    this.terrainUniforms.uTwilight.value = twilight;
     this.terrainUniforms.uSunDir.value.copy(this._sunDir);
     this.terrainUniforms.uCloudShadowAmt.value = shAmt;
     if (this.ringUniforms) {
-      this.ringUniforms.uSmokeHaze.value = this.terrainUniforms.uSmokeHaze.value;
+      this.ringUniforms.uSmokeHaze.value = activeSmoke;
       this.ringUniforms.uDaylight.value = dayFactor;
+      this.ringUniforms.uTwilight.value = twilight;
       this.ringUniforms.uSunDir.value.copy(this._sunDir);
       this.ringUniforms.uCloudShadowAmt.value = shAmt;
       this.ringUniforms.uWindDir.value.copy(this.terrainUniforms.uWindDir.value);
@@ -2410,55 +2447,45 @@ export class GlacierScene {
 
     // Warm golden daytime sunlight vs unmistakable cool indigo moonlit night!
     const clearSun = new THREE.Color(0xffe08a);
-    const twilightSun = new THREE.Color(0xff9438);
-    const smokySun = new THREE.Color(0xff8c2e);
+    const twilightSun = new THREE.Color(0xff8e32);
+    const smokySun = new THREE.Color(0xff8a2c);
     const overcastSun = new THREE.Color(0xe6dcc8);
     const moonCol = new THREE.Color(0x527ec4);
 
     const sunCol = clearSun.clone()
       .lerp(overcastSun, cloud * 0.48)
-      .lerp(twilightSun, twilight * 0.72)
-      .lerp(smokySun, smoke * 0.58)
+      .lerp(twilightSun, twilight * 0.76)
+      .lerp(smokySun, activeSmoke * 0.56)
       .lerp(moonCol, 1.0 - dayFactor);
 
     this.sunLight.color.copy(sunCol);
-    // Strong warm daylight even under clouds (1.7..3.5) vs genuinely dim moonlit night (0.34)
-    const dayInt = 1.45 + 2.15 * Math.pow(Math.max(swNorm, dayFactor * 0.24), 0.65);
-    this.sunLight.intensity = 0.34 + (dayInt - 0.34) * dayFactor;
+    const dayInt = 1.48 + 2.22 * Math.pow(Math.max(swNorm, dayFactor * 0.24), 0.65);
+    this.sunLight.intensity = 0.32 + (dayInt - 0.32) * dayFactor;
 
-    const clearSky = new THREE.Color(0xa6d8ff);
+    const clearSky = new THREE.Color(0x9ed4ff);
     const overcastSky = new THREE.Color(0xc8d4e2);
-    const smokeSky = new THREE.Color(0xd9a66c);
-    const nightSky = new THREE.Color(0x1e355e);
-    const dayHemiSky = clearSky.clone().lerp(overcastSky, cloud * 0.58).lerp(smokeSky, smoke * 0.48);
+    const smokeSky = new THREE.Color(0xd9a870);
+    const nightSky = new THREE.Color(0x1c325a);
+    const dayHemiSky = clearSky.clone().lerp(overcastSky, cloud * 0.58).lerp(smokeSky, activeSmoke * 0.46);
     this.hemiLight.color.copy(nightSky.clone().lerp(dayHemiSky, dayFactor));
 
     const dayGround = new THREE.Color(0x6b5842).lerp(new THREE.Color(0x4b535e), cloud * 0.5);
-    const nightGround = new THREE.Color(0x0b1220);
+    const nightGround = new THREE.Color(0x0a111e);
     this.hemiLight.groundColor.copy(nightGround.clone().lerp(dayGround, dayFactor));
     this.hemiLight.intensity = 0.16 + (0.68 + 0.36 * Math.sqrt(Math.max(swNorm, 0.15)) + 0.16 * cloud) * dayFactor;
 
-    // Gentle exposure boost in daylight & cool dim night
-    this.renderer.toneMappingExposure = 0.84 + 0.32 * dayFactor;
+    // Subtle cool sky bounce rim light during daytime, dim moon rim at night
+    this.rimLight.intensity = 0.10 + 0.36 * dayFactor * (1.0 - cloud * 0.35);
+
+    this.renderer.toneMappingExposure = 0.86 + 0.30 * dayFactor;
     this.floorMesh.material.color.copy(new THREE.Color(0x060b14).lerp(new THREE.Color(0x27364a), dayFactor));
 
     const sunPower = dayFactor * (0.38 + 0.62 * swNorm);
-    this.smokeSharedUniforms.uSunPower.value = Math.max(0.08, sunPower);
     this.cloudUniforms.uSunPower.value = Math.max(0.08, sunPower);
     this.virgaUniforms.uSunPower.value = Math.max(0.12, sunPower);
     this.mistUniforms.uSunPower.value = Math.max(0.12, sunPower);
     this.rainUniforms.uSunPower.value = Math.max(0.14, sunPower);
     this.snowUniforms.uSunPower.value = Math.max(0.18, sunPower);
-
-    // Distance fog harmonizes seamlessly with bright alpine daylight sky & milky wildfire haze vs dark night
-    const nightFog = new THREE.Color(0x050a14);
-    const clearFog = new THREE.Color(0x769cc4);
-    const stormFog = new THREE.Color(0x7c8a9a);
-    const smokeFog = new THREE.Color(0xa8947a);
-    const dayFog = clearFog.clone().lerp(stormFog, cloud * 0.70).lerp(smokeFog, Math.min(1.0, smoke * 0.85));
-    this.scene.fog.color.copy(nightFog.clone().lerp(dayFog, dayFactor));
-    const rainMist = Math.min(0.018, this.state.precipMmH * 0.0045);
-    this.scene.fog.density = 0.0045 + Math.pow(smoke, 0.85) * 0.022 + cloud * 0.0032 + rainMist;
   }
 
   flyTo(presetName) {
@@ -2563,7 +2590,6 @@ export class GlacierScene {
     this.skyUniforms.uTime.value += dt * windRate;
     this.terrainUniforms.uTime.value += dt * windRate;
     if (this.ringUniforms) this.ringUniforms.uTime.value += dt * windRate;
-    this.smokeSharedUniforms.uTime.value += dt * windRate;
     this.cloudUniforms.uTime.value += dt * (0.45 + 0.12 * this.state.windSpeed);
     this.virgaUniforms.uTime.value += dt;
     this.mistUniforms.uTime.value += dt;

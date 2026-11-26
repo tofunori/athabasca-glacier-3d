@@ -2,8 +2,7 @@ import "./style.css";
 import * as THREE from "three";
 import { GlacierScene } from "./glacierScene.js";
 
-const DATA_VER = "v2_obs_20261125";
-const LF_J_PER_KG = 334000.0; // Latent heat of fusion for snow/ice (J kg-1)
+const DATA_VER = "v2_hd_20261125";
 
 const loader = document.getElementById("loader");
 const loaderSub = document.getElementById("loaderSub");
@@ -14,26 +13,32 @@ const compassN = document.getElementById("compassN");
 const legendBody = document.getElementById("legendBody");
 
 async function loadAllAssets() {
-  loaderSub.textContent = "Chargement du MNE Athabasca + couronne Rocheuses 35 km (GLO-30)…";
-  const [metaRes, demRes, ringRes] = await Promise.all([
-    fetch(`./data/meta.json?v=${DATA_VER}`, { cache: "no-store" }),
-    fetch(`./data/dem_320.bin?v=${DATA_VER}`),
-    fetch(`./data/dem_ring_256.bin?v=${DATA_VER}`).catch(() => null),
-  ]);
-  if (!metaRes.ok || !demRes.ok) throw new Error("Impossible de charger les données du glacier.");
-
+  loaderSub.textContent = "Chargement du MNT HD 448×448 + couronne Rocheuses 35 km (GLO-30)…";
+  const metaRes = await fetch(`./data/meta.json?v=${DATA_VER}`, { cache: "no-store" });
+  if (!metaRes.ok) throw new Error("Impossible de charger les métadonnées du glacier.");
   const meta = await metaRes.json();
+
+  const demFile = meta.demFile || "dem_448.bin";
+  const ringFile = meta.ring?.file || "dem_ring_320.bin";
+  const aoFile = meta.aoFile || "terrain_ao_512.png";
+  const ringAoFile = meta.ring?.aoFile || "ring_ao_320.png";
+
+  const texLoader = new THREE.TextureLoader();
+  loaderSub.textContent = "Chargement Sentinel-2 L2A (10 m) & cartes d'occlusion topographique…";
+  const [demRes, ringRes, rgbTex, maskTex, aoTex, ringAoTex] = await Promise.all([
+    fetch(`./data/${demFile}?v=${DATA_VER}`),
+    fetch(`./data/${ringFile}?v=${DATA_VER}`).catch(() => null),
+    texLoader.loadAsync(`./data/s2_rgb_1536.jpg?v=${DATA_VER}`),
+    texLoader.loadAsync(`./data/s2_mask_768.png?v=${DATA_VER}`),
+    texLoader.loadAsync(`./data/${aoFile}?v=${DATA_VER}`).catch(() => null),
+    texLoader.loadAsync(`./data/${ringAoFile}?v=${DATA_VER}`).catch(() => null),
+  ]);
+  if (!demRes.ok) throw new Error("Impossible de charger le relief du glacier.");
+
   const demU16 = new Uint16Array(await demRes.arrayBuffer());
   const ringU16 = ringRes && ringRes.ok ? new Uint16Array(await ringRes.arrayBuffer()) : null;
 
-  loaderSub.textContent = "Chargement de l'imagerie Sentinel-2 L2A (10 m)…";
-  const texLoader = new THREE.TextureLoader();
-  const [rgbTex, maskTex] = await Promise.all([
-    texLoader.loadAsync(`./data/s2_rgb_1536.jpg?v=${DATA_VER}`),
-    texLoader.loadAsync(`./data/s2_mask_768.png?v=${DATA_VER}`),
-  ]);
-
-  return { meta, demU16, ringU16, rgbTex, maskTex };
+  return { meta, demU16, ringU16, rgbTex, maskTex, aoTex, ringAoTex };
 }
 
 function lerp(a, b, t) {
@@ -86,21 +91,6 @@ function wmoLabelFr(code) {
   if (code === 85 || code === 86) return "Averses de neige";
   if (code >= 95) return "Orage alpin";
   return "";
-}
-
-function enrichEpisodeWithRfAndMelt(ep) {
-  let meltCum = 0.0;
-  for (let i = 0; i < ep.hours.length; i++) {
-    const r = ep.hours[i];
-    const da = r.deltaAlpha ?? 0;
-    const sw = r.sw ?? 0;
-    const rf = Math.max(0, -da * sw);
-    r.rf = Number(rf.toFixed(1));
-    // Radiative melt-energy equivalent (mm w.e. h-1) when surface is near/above melting threshold
-    const meltHr = (r.ta ?? 0) > -2.0 ? (rf * 3600.0) / LF_J_PER_KG : 0.0;
-    meltCum += meltHr;
-    r.extraMeltMm = Number(meltCum.toFixed(2));
-  }
 }
 
 async function fetchLiveAthabascaEpisode() {
@@ -175,7 +165,6 @@ async function fetchLiveAthabascaEpisode() {
       rainSnowM: Math.round(zRs), snowLineM: Math.round(snowLineM), snowFrac: Number(snowFrac.toFixed(2)),
       snowPackMm: Number(snowPackMm.toFixed(1)), rainCumMm: Number(rainCumMm.toFixed(1)),
       dryRate: 0.0, wetRate: 0.0, depRate: 0.0, depCum: 0.0, wetFrac: 0.0, deltaAlpha: 0.0,
-      rf: 0.0, extraMeltMm: 0.0,
     };
   });
 
@@ -221,8 +210,6 @@ function sampleSequenceAtStep(ep, tFloat) {
     wetRate: lerp(a.wetRate ?? 0, b.wetRate ?? 0, f),
     depCumFrac,
     deltaAlpha: lerp(a.deltaAlpha ?? 0, b.deltaAlpha ?? 0, f),
-    rf: lerp(a.rf ?? 0, b.rf ?? 0, f),
-    extraMeltMm: lerp(a.extraMeltMm ?? 0, b.extraMeltMm ?? 0, f),
     pm25: a.pm25 == null || b.pm25 == null ? null : lerp(a.pm25, b.pm25, f),
     daod: a.daod == null || b.daod == null ? null : lerp(a.daod, b.daod, f),
     sw: lerp(a.sw ?? 0, b.sw ?? 0, f),
@@ -300,121 +287,13 @@ const EP_META_UI = {
   "live-now":      { dot: "live",  title: "En direct · Athabasca", sub: "Open-Meteo temps réel" },
 };
 
-function drawAltitudinalProfile(ctx, w, h, s, isClean, awsElevM = 2180, lapse = 6.5) {
-  ctx.clearRect(0, 0, w, h);
-  const padL = 38, padR = 44, padT = 10, padB = 20;
-  const plotW = w - padL - padR;
-  const plotH = h - padT - padB;
-  const zMin = 1850, zMax = 3520;
-  const tMin = -12, tMax = 20;
-
-  const yOfZ = (z) => padT + (1 - (z - zMin) / (zMax - zMin)) * plotH;
-  const xOfT = (t) => padL + ((t - tMin) / (tMax - tMin)) * plotW;
-
-  // 1. Rain vs Snow atmospheric phase shading divided by live Jennings isotherm!
-  const yIso = Math.max(padT, Math.min(padT + plotH, yOfZ(s.rainSnowM)));
-  ctx.fillStyle = "rgba(125, 211, 252, 0.10)";
-  ctx.fillRect(padL, padT, plotW, Math.max(0, yIso - padT));
-  ctx.fillStyle = "rgba(59, 130, 246, 0.08)";
-  ctx.fillRect(padL, yIso, plotW, Math.max(0, padT + plotH - yIso));
-
-  // 2. Subtle horizontal elevation gridlines (2000, 2500, 3000, 3500 m)
-  ctx.strokeStyle = "rgba(186, 218, 255, 0.11)";
-  ctx.lineWidth = 1;
-  ctx.fillStyle = "#8ea3bc";
-  ctx.font = "500 9.5px Inter, sans-serif";
-  ctx.textAlign = "right";
-  ctx.textBaseline = "middle";
-  [2000, 2500, 3000, 3500].forEach((z) => {
-    const y = yOfZ(z);
-    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
-    ctx.fillText(`${z}`, padL - 4, y);
-  });
-
-  // 3. Vertical 0 °C reference line
-  const x0 = xOfT(0);
-  ctx.save();
-  ctx.setLineDash([3, 3]);
-  ctx.strokeStyle = "rgba(226, 240, 255, 0.25)";
-  ctx.beginPath(); ctx.moveTo(x0, padT); ctx.lineTo(x0, padT + plotH); ctx.stroke();
-  ctx.restore();
-
-  // X-axis temperature ticks
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  [-10, 0, 10, 20].forEach((tv) => {
-    ctx.fillStyle = tv === 0 ? "#cbd5e1" : "#7c91ab";
-    ctx.fillText(`${tv}°`, xOfT(tv), padT + plotH + 4);
-  });
-
-  // 4. Right-hand bar column: instantaneous RF (W m-2) by elevation band (ablation vs transition vs accumulation)
-  const barX = padL + plotW + 6;
-  const barW = padR - 10;
-  const nBands = 10;
-  const snowResetLine = isClean ? 3600 : s.snowLineM;
-  const packCover = isClean ? 0 : 1 - Math.exp(-Math.max(0, s.snowPackMm) / 2.6);
-  for (let i = 0; i < nBands; i++) {
-    const z0 = 1965 + (i / nBands) * (3456 - 1965);
-    const z1 = 1965 + ((i + 1) / nBands) * (3456 - 1965);
-    const zm = 0.5 * (z0 + z1);
-    const isAbl = zm < 2550 ? 1.25 : 0.85;
-    const snowBurial = zm > snowResetLine ? packCover * 0.88 : 0.0;
-    const bandRf = isClean ? 0 : Math.max(0, s.rf * isAbl * (1 - snowBurial));
-    const frac = Math.min(1, bandRf / 52.0);
-    const yTop = yOfZ(z1);
-    const bh = Math.max(1, yOfZ(z0) - yTop - 1.5);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.05)";
-    ctx.fillRect(barX, yTop, barW, bh);
-    if (frac > 0.01) {
-      ctx.fillStyle = frac > 0.6 ? "#fb923c" : (frac > 0.25 ? "#f97316" : "#c2410c");
-      ctx.fillRect(barX, yTop, Math.max(2, frac * barW), bh);
-    }
-  }
-  ctx.fillStyle = "#fdba74";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  ctx.fillText("RF", barX + barW * 0.5, padT + plotH + 4);
-
-  // 5. Live Jennings rain-snow isotherm line
-  if (s.rainSnowM >= zMin && s.rainSnowM <= zMax) {
-    ctx.save();
-    ctx.setLineDash([4, 3]);
-    ctx.strokeStyle = "#38bdf8";
-    ctx.lineWidth = 1.6;
-    ctx.beginPath(); ctx.moveTo(padL, yIso); ctx.lineTo(padL + plotW, yIso); ctx.stroke();
-    ctx.restore();
-    ctx.fillStyle = "#7dd3fc";
-    ctx.textAlign = "left";
-    ctx.textBaseline = yIso > padT + 14 ? "bottom" : "top";
-    ctx.fillText(`Neige > ${Math.round(s.rainSnowM)} m`, padL + 4, yIso + (yIso > padT + 14 ? -3 : 3));
-  }
-
-  // 6. Live temperature vertical profile T(z) = Ta_aws - 6.5 * (z - 2.18)
-  const tBot = s.ta - lapse * ((zMin - awsElevM) / 1000.0);
-  const tTop = s.ta - lapse * ((zMax - awsElevM) / 1000.0);
-  ctx.strokeStyle = "#fbbf24";
-  ctx.lineWidth = 2.0;
-  ctx.beginPath();
-  ctx.moveTo(Math.max(padL, Math.min(padL + plotW, xOfT(tBot))), yOfZ(zMin));
-  ctx.lineTo(Math.max(padL, Math.min(padL + plotW, xOfT(tTop))), yOfZ(zMax));
-  ctx.stroke();
-
-  // AWS point marker (2,180 m)
-  const xAws = Math.max(padL, Math.min(padL + plotW, xOfT(s.ta)));
-  const yAws = yOfZ(awsElevM);
-  ctx.fillStyle = "#fde047";
-  ctx.beginPath(); ctx.arc(xAws, yAws, 3.2, 0, Math.PI * 2); ctx.fill();
-  ctx.strokeStyle = "#070b11"; ctx.lineWidth = 1.2; ctx.stroke();
-}
-
 async function boot() {
   try {
     const assets = await loadAllAssets();
-    const { meta, demU16, ringU16, rgbTex, maskTex } = assets;
-    Object.values(meta.episodes).forEach(enrichEpisodeWithRfAndMelt);
+    const { meta, demU16, ringU16, rgbTex, maskTex, aoTex, ringAoTex } = assets;
 
-    loaderSub.textContent = "Initialisation de la scène 3D v2…";
-    const glacier = new GlacierScene(canvas, meta, demU16, rgbTex, maskTex, ringU16);
+    loaderSub.textContent = "Initialisation de la scène 3D v2 HD…";
+    const glacier = new GlacierScene(canvas, meta, demU16, rgbTex, maskTex, aoTex, ringU16, ringAoTex);
 
     const pins = meta.landmarks.map((lm) => {
       const el = document.createElement("div");
@@ -483,20 +362,17 @@ async function boot() {
       }
     });
 
-    // Altitudinal Profile & RF Card
-    const profileCard = document.getElementById("profileCard");
-    const btnProfileToggle = document.getElementById("btnProfileToggle");
-    const profileCanvas = document.getElementById("profileCanvas");
-    const profileCtx = profileCanvas.getContext("2d");
-    const valRfNow = document.getElementById("valRfNow");
-    const valExtraMelt = document.getElementById("valExtraMelt");
-    let profileVisible = true;
-    btnProfileToggle.addEventListener("click", () => {
-      profileVisible = !profileVisible;
-      profileCard.classList.toggle("hidden", !profileVisible);
-      btnProfileToggle.classList.toggle("active-cam", profileVisible);
-      btnProfileToggle.setAttribute("aria-pressed", profileVisible ? "true" : "false");
-    });
+    // Massif 35 km Horizon Quick Toggle (synced with chkHorizon in drawer)
+    const btnHorizonToggle = document.getElementById("btnHorizonToggle");
+    const chkHorizon = document.getElementById("chkHorizon");
+    function setHorizonMode(on) {
+      glacier.setShowHorizon(on);
+      chkHorizon.checked = on;
+      btnHorizonToggle.classList.toggle("active-cam", on);
+      btnHorizonToggle.setAttribute("aria-pressed", on ? "true" : "false");
+    }
+    btnHorizonToggle.addEventListener("click", () => setHorizonMode(!glacier.state.showHorizon));
+    chkHorizon.addEventListener("change", (e) => setHorizonMode(e.target.checked));
 
     // Synchronized Skaping Webcam PiP + Drag/Resize + Lightbox
     const webcamCard = document.getElementById("webcamCard");
@@ -824,21 +700,15 @@ async function boot() {
       if (m === 0) {
         legendBody.innerHTML = `
           <div class="legend-title">Atmosphère &amp; manteau neigeux</div>
-          <div><span style="color:#eab308">■ Fumée</span> (voile vallée) · <span style="color:#e2e8f0">■ Nuages</span> (altitude + ombres) · <span style="color:#5cc8ff">— Pluie/neige</span></div>
+          <div><span style="color:#eab308">■ Fumée 3D</span> (volumétrique) · <span style="color:#e2e8f0">■ Nuages</span> (altitude + ombres) · <span style="color:#5cc8ff">— Pluie/neige</span></div>
         `;
       } else if (m === 1) {
-        legendBody.innerHTML = `
-          <div class="legend-title">Forçage radiatif instantané RF (W m⁻²)</div>
-          <div class="legend-bar" style="background:linear-gradient(90deg,#120d31,#5f156e,#cc3e3b,#f78c1e,#fcf080)"></div>
-          <div class="legend-scale"><span>0</span><span>25</span><span>52+ W m⁻²</span></div>
-        `;
-      } else if (m === 2) {
         legendBody.innerHTML = `
           <div class="legend-title">Dépôt cumulé EC + OM (mg m⁻²)</div>
           <div class="legend-bar" style="background:linear-gradient(90deg,#14243d,#423d70,#bf4d2e,#f5a324,#fceb99)"></div>
           <div class="legend-scale"><span>0</span><span>${fmtFr(totDep * 0.5, 0)}</span><span>${fmtFr(totDep, 1)} mg m⁻²</span></div>
         `;
-      } else if (m === 3) {
+      } else if (m === 2) {
         legendBody.innerHTML = `
           <div class="legend-title">Surface glaciaire (NDSI + albédo)</div>
           <div class="legend-grid">
@@ -851,7 +721,7 @@ async function boot() {
       } else {
         legendBody.innerHTML = `
           <div class="legend-title">Maquette géomorphologique</div>
-          <div>Relief Copernicus GLO-30 (1 867 – 3 494 m) + couronne Rocheuses 35 km.</div>
+          <div>Relief HD Copernicus GLO-30 (448×448, 1 867 – 3 494 m) + Rocheuses 35 km.</div>
         `;
       }
     }
@@ -900,7 +770,6 @@ async function boot() {
           s.snowPackMm = Math.max(base.snowPackMm, s.precip * 5.5 * snowFrac);
           s.snowLineM = Math.max(1840, Math.min(s.snowLineM, s.rainSnowM - 50));
         }
-        s.rf = Math.max(0, -s.deltaAlpha * s.sw);
       } else {
         syncSlidersToState(s);
       }
@@ -913,7 +782,6 @@ async function boot() {
       glacier.setMeteorology({
         hour: s.hour,
         depCumFrac: s.depCumFrac,
-        rfWm2: s.rf,
         plumeDensity: s.plume,
         cloudCover: s.cloud,
         cloudLow: s.clLow,
@@ -938,7 +806,8 @@ async function boot() {
       clockTime.textContent = formatHour(s.hour);
       clockPhase.textContent = describePhase(currentEpId, s, labActive);
       presentClock.textContent = `${s.dayLabel} · ${formatHour(s.hour)} MDT`;
-      presentMeta.textContent = isClean ? "Référence propre" : `RF +${fmtFr(s.rf, 1)} W m⁻² · ${fmtFr(s.ta, 1)} °C`;
+      const pmTxt = s.pm25 != null ? `PM2,5 ${fmtFr(s.pm25, s.pm25 >= 10 ? 0 : 1)} µg/m³` : describePhase(currentEpId, s, labActive);
+      presentMeta.textContent = isClean ? "Référence propre" : `${pmTxt} · ${fmtFr(s.ta, 1)} °C`;
 
       if (!isDay) {
         kpiSwLw.textContent = `Nuit · LW ${Math.round(s.lw)}`;
@@ -982,13 +851,6 @@ async function boot() {
       } else {
         const modeTag = s.depRate < 0.02 ? "0/h" : `+${fmtFr(s.depRate, s.depRate >= 10 ? 0 : 1)} ${s.wetFrac >= 0.5 ? "hum" : "sec"}`;
         kpiDep.textContent = `${fmtFr(s.depCum, s.depCum >= 100 ? 0 : 1)} mg (${modeTag})`;
-      }
-
-      // Live RF + Extra Melt + Altitudinal Profile Canvas
-      valRfNow.textContent = isClean ? "+0,0 W m⁻²" : `+${fmtFr(s.rf, 1)} W m⁻²`;
-      valExtraMelt.textContent = isClean ? "+0,0 mm éq." : `+${fmtFr(s.extraMeltMm, 1)} mm éq.`;
-      if (profileVisible) {
-        drawAltitudinalProfile(profileCtx, profileCanvas.width, profileCanvas.height, s, isClean, meta.awsElevM || 2180, meta.lapseCPerKm || 6.5);
       }
 
       const curBin = Math.floor(s.t / histBinHours);
@@ -1129,16 +991,12 @@ async function boot() {
       updateLegend();
     }
     modeBtns.forEach((btn) => btn.addEventListener("click", () => setSurfaceMode(Number(btn.dataset.mode))));
-    document.getElementById("btnQuickRfMode").addEventListener("click", () => {
-      setSurfaceMode(glacier.state.mode === 1 ? 0 : 1);
-    });
 
     const slExag = document.getElementById("slExag"), valExag = document.getElementById("valExag");
     slExag.addEventListener("input", () => { const v = parseFloat(slExag.value); valExag.textContent = `${fmtFr(v, 2)}×`; glacier.setExaggeration(v); });
     const slBoost = document.getElementById("slBoost"), valBoost = document.getElementById("valBoost");
     slBoost.addEventListener("input", () => { const v = parseFloat(slBoost.value); valBoost.textContent = `${fmtFr(v, 1)}×`; glacier.setBoost(v); });
 
-    document.getElementById("chkHorizon").addEventListener("change", (e) => glacier.setShowHorizon(e.target.checked));
     document.getElementById("chkClouds").addEventListener("change", (e) => glacier.setShowClouds(e.target.checked));
     document.getElementById("chkSmoke").addEventListener("change", (e) => glacier.setShowSmoke(e.target.checked));
     document.getElementById("chkPrecip").addEventListener("change", (e) => glacier.setShowPrecip(e.target.checked));

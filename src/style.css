@@ -187,33 +187,6 @@ body.present-mode .hud-el { opacity: 0; pointer-events: none; transition: opacit
 .compass svg { width: 30px; height: 30px; }
 .compass-n { position: absolute; font-size: 9.5px; font-weight: 700; color: #f97316; pointer-events: none; }
 
-/* Left Scientific Altitudinal Profile & RF Card */
-.profile-card {
-  position: fixed; left: 16px; bottom: 86px; width: 266px; z-index: 12;
-  padding: 10px 11px; border-radius: var(--radius); background: var(--surface-strong);
-  border: 1px solid var(--border); backdrop-filter: blur(18px);
-  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.42); display: flex; flex-direction: column; gap: 7px;
-}
-.profile-card.hidden { display: none; }
-.profile-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.profile-title { font-family: var(--font-display); font-size: 12px; font-weight: 600; color: var(--text); }
-.rf-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.rf-box {
-  padding: 5px 7px; border-radius: 8px; background: rgba(255,255,255,0.035); border: 1px solid rgba(186,218,255,0.10);
-  display: flex; flex-direction: column; gap: 2px;
-}
-.rf-lbl { font-size: 9.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.rf-val { font-size: 12.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.rf-val.hot { color: #fb923c; }
-.rf-val.cyan { color: #7dd3fc; }
-.profile-canvas { width: 100%; height: 162px; border-radius: 8px; background: rgba(4, 8, 15, 0.72); border: 1px solid rgba(186,218,255,0.08); display: block; }
-.profile-foot { display: flex; align-items: center; justify-content: space-between; font-size: 10px; color: var(--muted); }
-.profile-foot span { display: inline-flex; align-items: center; gap: 4px; }
-.swatch { width: 8px; height: 3px; border-radius: 2px; display: inline-block; }
-.swatch.temp { background: #fbbf24; }
-.swatch.iso { background: #38bdf8; }
-.swatch.rf { background: #f97316; }
-
 /* Synchronized Draggable & Resizable Skaping Webcam PiP Card */
 .webcam-card {
   position: fixed; right: 16px; bottom: 16px; width: 320px; z-index: 13;
@@ -293,7 +266,6 @@ body.present-mode .hud-el { opacity: 0; pointer-events: none; transition: opacit
   padding: 7px 8px; border-radius: 8px; border: 1px solid var(--border); background: rgba(255,255,255,0.03);
   color: var(--muted); font-family: var(--font-body); font-size: 11.5px; font-weight: 500; cursor: pointer;
 }
-.mode-btn.rf-mode-btn { color: #fdba74; }
 .mode-btn.active { color: var(--text); background: var(--accent-bg); border-color: rgba(92,200,255,0.45); }
 .slider-row { display: flex; flex-direction: column; gap: 4px; }
 .slider-head { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
@@ -375,8 +347,6 @@ input[type="range"] { width: 100%; accent-color: var(--accent); height: 4px; cur
 .hist-bar { flex: 1; border-radius: 1.5px 1.5px 0 0; background: rgba(147,167,190,0.20); }
 .hist-bar.past.depRate { background: rgba(245,158,11,0.75); }
 .hist-bar.current.depRate { background: #fbbf24; }
-.hist-bar.past.rf { background: rgba(239,68,68,0.82); }
-.hist-bar.current.rf { background: #fca5a5; }
 .hist-bar.past.pm25 { background: rgba(249,115,22,0.78); }
 .hist-bar.current.pm25 { background: #fb923c; }
 .hist-bar.past.sw { background: rgba(253,224,71,0.75); }
@@ -421,12 +391,11 @@ input[type="range"] { width: 100%; accent-color: var(--accent); height: 4px; cur
 .modal-note { font-size: 12px; color: var(--muted); padding-top: 8px; border-top: 1px solid var(--border); }
 
 @media (max-width: 1380px) {
-  .profile-card { width: 236px; bottom: 174px; }
   .legend-card { display: none; }
   .webcam-card { width: 268px; bottom: 174px; }
   .timeline-dock { width: min(800px, calc(100vw - 32px)); min-width: 0; }
 }
 @media (max-width: 960px) {
-  .preset-group, .clock-phase, .chart-tabs, .profile-card { display: none; }
+  .preset-group, .clock-phase, .chart-tabs { display: none; }
   .kpi-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

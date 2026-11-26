@@ -236,18 +236,22 @@ export class GlacierScene {
           vec3 skyStorm = mix(stormZen, stormHor, horiz);
 
           // Wildfire smoke linear sky + Henyey-Greenstein Mie forward sun-glow
+          // Calibrated against real Columbia Icefield Skaping webcam: moderate smoke = luminous milky pearlescent silver-cream; heavy smoke (>0.55) = golden-amber copper!
           float g = 0.62;
           float hg = (1.0 - g * g) / pow(max(0.22, 1.0 + g * g - 2.0 * g * dot(d, sDir)), 1.5);
           float mieGlow = clamp((hg - 0.32) * 0.22, 0.0, 0.72);
-          vec3 smokeZen = vec3(0.145, 0.120, 0.095);
-          vec3 smokeHor = mix(vec3(0.420, 0.395, 0.355), vec3(0.760, 0.480, 0.220), clamp(0.28 + 0.58 * mieGlow + 0.32 * uSmoke, 0.0, 1.0));
-          vec3 skySmoke = mix(smokeZen, smokeHor, pow(1.0 - max(h, 0.0), 2.1));
+          float heavyS = smoothstep(0.48, 0.92, uSmoke);
+          vec3 smokeZen = mix(vec3(0.26, 0.29, 0.33), vec3(0.24, 0.16, 0.10), heavyS);
+          vec3 smokeHorBase = mix(vec3(0.50, 0.51, 0.51), vec3(0.64, 0.55, 0.42), clamp(0.28 + 0.50 * mieGlow + 0.45 * uSmoke, 0.0, 1.0));
+          vec3 smokeHor = mix(smokeHorBase, vec3(0.72, 0.40, 0.16), heavyS * 0.80);
+          vec3 skySmoke = mix(smokeZen, smokeHor, pow(1.0 - max(h, 0.0), 1.9));
 
           vec3 daySky = mix(skyClear, skyStorm, clamp(uCloud * 0.78, 0.0, 1.0));
-          daySky = mix(daySky, skySmoke, clamp(uSmoke * 0.76, 0.0, 1.0));
+          daySky = mix(daySky, skySmoke, clamp(uSmoke * 0.82, 0.0, 1.0));
           // Dense trapped alpine horizon smoke veil matching the 35 km Rockies outer rim identically!
-          vec3 veilCol = mix(vec3(0.39, 0.38, 0.36), vec3(0.70, 0.45, 0.21), clamp(0.26 + 0.55 * mieGlow + 0.36 * uSmoke, 0.0, 1.0));
-          daySky = mix(daySky, veilCol, lowBand * clamp(uSmoke * 0.88, 0.0, 0.85));
+          vec3 veilCol = mix(vec3(0.48, 0.50, 0.51), vec3(0.60, 0.54, 0.44), clamp(0.24 + 0.52 * mieGlow + 0.40 * uSmoke, 0.0, 1.0));
+          veilCol = mix(veilCol, vec3(0.66, 0.38, 0.16), heavyS * 0.75);
+          daySky = mix(daySky, veilCol, lowBand * clamp(uSmoke * 0.92, 0.0, 0.90));
 
           // Golden / alpenglow rose sunrise & sunset horizon band
           vec3 twilightBand = mix(vec3(0.95, 0.22, 0.05), vec3(1.15, 0.62, 0.14), pow(sunDot, 2.0));
@@ -642,20 +646,23 @@ export class GlacierScene {
             if (t < 0.82) return mix(c2, c3, (t - 0.55) / 0.27);
             return mix(c3, c4, clamp((t - 0.82) / 0.18, 0.0, 1.0));
           }
-          // Procedural surface micro-height for analytical world-space bump normals (limestone ledges, ice ogives, snow sastrugi, lake waves)
+          // High-definition procedural surface micro-height for analytical world-space bump normals (sharp limestone ledges, talus, glacier crevasses/ogives, wind sastrugi, lake waves)
           float terrainMicroHeight(vec2 xz, float elevM, float isCryo, float isSnow, float isIce, float freshSnow, float isLake) {
             vec2 wa = vec2(dot(xz, uWindDir), dot(xz, vec2(-uWindDir.y, uWindDir.x)));
-            float rockStrata = sin(elevM * 0.13 + fbm2(xz * 2.4) * 3.8) * 0.45 + (fbm2(xz * 19.0) - 0.5) * 0.85;
-            float iceOgive = sin(xz.x * 18.0 - xz.y * 22.0 + vnoise(xz * 6.0) * 3.0) * 0.32 + (vnoise(xz * 28.0) - 0.5) * 0.65;
-            float snowDrift = (fbm2(vec2(wa.x * 5.5, wa.y * 16.0)) - 0.5) * 0.72;
-            float h = mix(rockStrata * 0.85, mix(iceOgive * 0.62, snowDrift * 0.42, isSnow), isCryo);
-            h = mix(h, snowDrift * 0.38, freshSnow * 0.85);
+            float strata = sin(elevM * 0.14 + fbm2(xz * 3.0) * 4.2) * 0.55;
+            float crags = (fbm2(xz * 14.0) - 0.5) * 1.15 + (vnoise(xz * 48.0) - 0.5) * 0.55;
+            float rockH = strata + crags;
+            float crev = abs(sin(xz.x * 24.0 - xz.y * 28.0 + fbm2(xz * 7.5) * 3.4));
+            float iceH = (crev - 0.5) * 0.85 + (vnoise(xz * 36.0) - 0.5) * 0.65;
+            float snowDrift = (fbm2(vec2(wa.x * 6.5, wa.y * 19.0)) - 0.5) * 0.80 + (vnoise(xz * 44.0) - 0.5) * 0.25;
+            float h = mix(rockH, mix(iceH, snowDrift * 0.55, isSnow), isCryo);
+            h = mix(h, snowDrift * 0.48, freshSnow * 0.88);
             if (isLake > 0.05) {
               vec2 p1 = xz * 26.0 - uWindDir * uTime * 1.15;
               vec2 p2 = xz * 46.0 + vec2(uWindDir.y, -uWindDir.x) * uTime * 0.85;
               vec2 p3 = xz * 74.0 - uWindDir * uTime * 1.65;
               float wH = (vnoise(p1) - 0.5) * 0.50 + (vnoise(p2) - 0.5) * 0.32 + (vnoise(p3) - 0.5) * 0.18;
-              h = mix(h, wH * 0.48, isLake);
+              h = mix(h, wH * 0.55, isLake);
             }
             return h;
           }`
@@ -725,13 +732,27 @@ export class GlacierScene {
           }
 
           if (uMode < 0.5) {
-            // Subtle alpine cliff striations & glacial blue-ice depth enhancement
-            float cliffReveal = (1.0 - isCryo) * (1.0 - vSlopeUp);
-            float strataCol = sin(elevM * 0.11 + ledgeTex * 3.5) * 0.06 * cliffReveal;
-            diffuseColor.rgb = max(vec3(0.01), diffuseColor.rgb * (microShade + strataCol));
-            // Give bare glacier ice natural glacial turquoise-steel hue & snow crisp alpine balance
-            diffuseColor.rgb *= mix(vec3(1.0), vec3(0.86, 0.92, 0.98), isSnow * 0.42);
-            diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.86, 0.97, 1.08), isIce * 0.35);
+            // Photorealistic Canadian Rockies detail synthesis:
+            // - Crisp slate-charcoal sedimentary limestone strata, scree micro-contrast & fracture cracks on bare rock (eliminates smooth clay/brown satellite blur!)
+            // - Transverse ogives & cyan-gray crevasse fissures on bare glacier ice
+            float rockMask = (1.0 - isCryo) * notLake;
+            float highRock = smoothstep(2020.0, 2320.0, elevM + (ledgeTex - 0.5) * 160.0);
+            float screeDetail = fbm2(vObjPos.xz * 34.0);
+            float fineSpeckle = vnoise(vObjPos.xz * 95.0);
+            float strataBand = sin(elevM * 0.13 + fbm2(vObjPos.xz * 3.0) * 4.2);
+            float rockDetailMod = 1.0 + (screeDetail - 0.5) * 0.30 + (fineSpeckle - 0.5) * 0.18 + strataBand * 0.14 * (1.0 - vSlopeUp);
+            float rockLuma = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+            // Shift high alpine limestone rock away from muddy warm brown toward authentic cool Rockies slate-gray limestone!
+            vec3 slateRock = vec3(rockLuma * 0.90, rockLuma * 0.95, rockLuma * 1.05);
+            diffuseColor.rgb = mix(diffuseColor.rgb, slateRock, rockMask * highRock * 0.58);
+            // Darken sharp rock gullies/fractures and brighten limestone ridges subtly
+            float ridgeAccent = mix(0.84, 1.14, clamp(topoCurv, 0.0, 1.0));
+            diffuseColor.rgb = max(vec3(0.008), diffuseColor.rgb * mix(microShade, rockDetailMod * ridgeAccent, rockMask));
+
+            // Crisp glacial ice crevasses & ogive bands + snow texture balance
+            float iceCrev = smoothstep(0.12, 0.36, abs(sin(vObjPos.x * 24.0 - vObjPos.z * 28.0 + fbm2(vObjPos.xz * 7.5) * 3.4)));
+            diffuseColor.rgb *= mix(vec3(1.0), vec3(0.88, 0.93, 0.99), isSnow * 0.36);
+            diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * mix(vec3(0.68, 0.84, 0.98), vec3(0.96, 1.01, 1.06), iceCrev), isIce * 0.46);
 
             float depVis = pow(clamp(localDepNorm, 0.0, 1.25), 0.78);
             float sootCover = clamp(depVis * 0.22 * uDepBoost * (0.20 + 0.80 * isCryo), 0.0, 0.72);
@@ -815,14 +836,15 @@ export class GlacierScene {
           // Real-time analytical world-space micro-normal bump mapping (limestone ledges, glacier ogives, wind sastrugi & animated lake waves!)
           if (uMode < 0.5 || uMode > 2.5) {
             float camD = length(vObjPos - cameraPosition);
-            float bumpDistFade = 1.0 - smoothstep(6.0, 22.0, camD);
-            float eps = 0.018;
+            float bumpDistFade = 1.0 - smoothstep(7.0, 24.0, camD);
+            float eps = 0.015;
             float h0 = terrainMicroHeight(vObjPos.xz, elevM, isCryo, isSnow, isIce, freshSnow, isLake);
             float hX = terrainMicroHeight(vObjPos.xz + vec2(eps, 0.0), elevM, isCryo, isSnow, isIce, freshSnow, isLake);
             float hZ = terrainMicroHeight(vObjPos.xz + vec2(0.0, eps), elevM, isCryo, isSnow, isIce, freshSnow, isLake);
-            float bumpStrength = mix(0.28, 0.16, isCryo) * (0.35 + 0.65 * bumpDistFade);
-            bumpStrength = mix(bumpStrength, 0.22, isLake);
-            vec3 gWorld = vec3((hX - h0) / eps, 0.0, (hZ - h0) / eps) * bumpStrength * 0.032;
+            float bumpStrength = mix(0.46, 0.24, isCryo) * (0.40 + 0.60 * bumpDistFade);
+            bumpStrength = mix(bumpStrength, 0.32, isLake);
+            vec3 gWorld = vec3((hX - h0) / eps, 0.0, (hZ - h0) / eps) * bumpStrength * 0.014;
+            gWorld = clamp(gWorld, vec3(-0.65), vec3(0.65));
             vec3 gView = (viewMatrix * vec4(gWorld, 0.0)).xyz;
             normal = normalize(normal - gView);
           }`
@@ -890,9 +912,10 @@ export class GlacierScene {
             vec3 rayleighCol = mix(vec3(0.006, 0.012, 0.028), rayleighDay, uDaylight);
             gl_FragColor.rgb = mix(gl_FragColor.rgb, rayleighCol, rayleighT);
 
-            // 2. True 8-Step 3D Volumetric Ray-Marched Wildfire Smoke (Beer-Lambert + Henyey-Greenstein Mie!)
+            // 2. True 8-Step 3D Volumetric Ray-Marched Wildfire Smoke (calibrated directly against real Columbia Icefield webcam!)
+            // Moderate smoke = luminous milky pearlescent silver-cream veil; heavy plume (>0.55) = warm golden-amber copper!
             if (uSmokeHaze > 0.015) {
-              float yTop = 2.65 * uExag;
+              float yTop = 2.95 * uExag;
               float y0 = cameraPosition.y;
               float y1 = vObjPos.y;
               float tEnter = 0.0;
@@ -909,20 +932,21 @@ export class GlacierScene {
               if (hitVol && tExit > tEnter + 0.02) {
                 float segLen = tExit - tEnter;
                 float stepLen = segLen / 8.0;
-                float H = 0.96 * uExag;
-                float extBase = 0.055 + 0.50 * pow(uSmokeHaze, 0.88);
+                float H = 1.12 * uExag;
+                float extBase = 0.080 + 0.62 * pow(uSmokeHaze, 0.86);
                 float cosT = dot(rayDir, sDir);
                 float g = 0.62;
                 float hg = (1.0 - g * g) / pow(max(0.22, 1.0 + g * g - 2.0 * g * cosT), 1.5);
                 float sunGlow = clamp((hg - 0.32) * 0.24, 0.0, 0.72);
+                float heavyS = smoothstep(0.48, 0.92, uSmokeHaze);
 
-                vec3 smokeCool = vec3(0.36, 0.36, 0.35);
-                vec3 smokeWarm = vec3(0.68, 0.45, 0.21);
-                vec3 smokeDense = vec3(0.64, 0.29, 0.09);
-                vec3 baseInscatter = mix(smokeCool, smokeWarm, clamp(0.24 + 0.56 * sunGlow + 0.34 * uSmokeHaze, 0.0, 1.0));
-                baseInscatter = mix(baseInscatter, smokeDense, clamp((uSmokeHaze - 0.55) * 0.85, 0.0, 0.52));
-                baseInscatter *= (1.0 - uCloudShadowAmt * 0.20);
-                vec3 nightInscatter = vec3(0.009, 0.010, 0.015);
+                vec3 smokePearl = vec3(0.49, 0.51, 0.52);
+                vec3 smokeCream = vec3(0.62, 0.55, 0.44);
+                vec3 smokeAmber = vec3(0.68, 0.37, 0.14);
+                vec3 baseInscatter = mix(smokePearl, smokeCream, clamp(0.22 + 0.52 * sunGlow + 0.42 * uSmokeHaze, 0.0, 1.0));
+                baseInscatter = mix(baseInscatter, smokeAmber, heavyS * 0.78);
+                baseInscatter *= (1.0 - uCloudShadowAmt * 0.18);
+                vec3 nightInscatter = vec3(0.009, 0.011, 0.016);
 
                 float trans = 1.0;
                 vec3 accumLight = vec3(0.0);
@@ -932,19 +956,17 @@ export class GlacierScene {
                   vec3 p = cameraPosition + rayDir * t;
                   float hAbove = max(0.0, p.y - 0.04 * uExag);
                   float strat = exp(-hAbove / H);
-                  // True 3D wind-advected silky plume turbulence (drifts gently down the Sunwapta trough!)
                   vec2 nUv = p.xz * 0.24 - windDrift + vec2(p.y * 0.34, -p.y * 0.26);
-                  float wisp = 0.66 + 0.54 * fbm2(nUv);
+                  float wisp = 0.68 + 0.50 * fbm2(nUv);
                   float sigma = extBase * strat * wisp;
                   float stepT = exp(-sigma * stepLen);
-                  // Sunlit upper smoke glows slightly warmer/brighter; deep trapped valley floor is softer milky-cool
-                  float altLit = clamp(0.76 + 0.34 * (hAbove / max(yTop, 0.1)), 0.72, 1.12);
+                  float altLit = clamp(0.84 + 0.26 * (hAbove / max(yTop, 0.1)), 0.80, 1.12);
                   vec3 stepCol = mix(nightInscatter, baseInscatter * altLit, uDaylight);
                   accumLight += trans * (1.0 - stepT) * stepCol;
                   trans *= stepT;
                 }
                 float fadeIn = smoothstep(0.015, 0.15, uSmokeHaze);
-                float blendTrans = mix(1.0, max(trans, 0.12), fadeIn);
+                float blendTrans = mix(1.0, max(trans, 0.10), fadeIn);
                 gl_FragColor.rgb = gl_FragColor.rgb * blendTrans + accumLight * fadeIn;
               }
             }
@@ -1150,10 +1172,11 @@ export class GlacierScene {
           float n = fbm(vWorldPos.xz * 0.85);
           float strata = sin(vElevM * 0.09 + n * 4.2) * 0.14 * (1.0 - slopeUp);
 
-          // Linear-space Rockies palette calibrated to Sentinel-2 block reflectance
+          // Linear-space Rockies slate-limestone palette matching the central Sentinel-2 block identically
           vec3 forest = mix(vec3(0.016, 0.036, 0.020), vec3(0.032, 0.056, 0.030), n);
-          vec3 rock = mix(vec3(0.058, 0.050, 0.044), vec3(0.165, 0.145, 0.125), clamp(n + strata, 0.0, 1.0));
-          vec3 alpineSnow = vec3(0.58, 0.66, 0.76);
+          float cragF = fbm2(vWorldPos.xz * 6.5);
+          vec3 rock = mix(vec3(0.048, 0.052, 0.058), vec3(0.155, 0.160, 0.168), clamp(n * 0.65 + cragF * 0.35 + strata, 0.0, 1.0));
+          vec3 alpineSnow = vec3(0.60, 0.68, 0.78);
 
           float treeLine = smoothstep(1920.0, 2220.0, vElevM + (n - 0.5) * 180.0 - (warmAspect - 0.5) * 120.0);
           vec3 baseCol = mix(forest, rock, treeLine);
@@ -1177,7 +1200,7 @@ export class GlacierScene {
             cloudSh = 1.0 - smoothstep(0.66 - uCloudShadowAmt * 0.42, 0.84, cn) * uCloudShadowAmt * 0.45 * uDaylight;
           }
           float aoWeight = mix(0.45, 1.06, pow(clamp(svfAo, 0.0, 1.0), 1.15));
-          vec3 sunTint = mix(vec3(0.14, 0.24, 0.48), mix(vec3(1.08, 0.88, 0.52), vec3(1.18, 0.54, 0.20), uTwilight * 0.65), uDaylight);
+          vec3 sunTint = mix(vec3(0.14, 0.24, 0.48), mix(vec3(1.06, 0.96, 0.78), vec3(1.18, 0.54, 0.20), uTwilight * 0.65), uDaylight);
           vec3 ambCol = mix(vec3(0.015, 0.028, 0.065), vec3(0.26, 0.38, 0.54), uDaylight) * aoWeight;
           vec3 col = baseCol * (ambCol + sunTint * ndl * (0.20 + 0.94 * uDaylight) * cloudSh);
 
@@ -1192,7 +1215,7 @@ export class GlacierScene {
           col = mix(col, mix(vec3(0.006, 0.012, 0.028), rayleighDay, uDaylight), rayleighT);
 
           if (uSmokeHaze > 0.015) {
-            float yTop = 2.65 * uExag;
+            float yTop = 2.95 * uExag;
             float y0 = cameraPosition.y;
             float y1 = vWorldPos.y;
             float tEnter = 0.0;
@@ -1208,20 +1231,21 @@ export class GlacierScene {
             if (hitVol && tExit > tEnter + 0.02) {
               float segLen = min(tExit - tEnter, 24.0);
               float stepLen = segLen / 8.0;
-              float H = 0.96 * uExag;
-              float extBase = 0.055 + 0.50 * pow(uSmokeHaze, 0.88);
+              float H = 1.12 * uExag;
+              float extBase = 0.080 + 0.62 * pow(uSmokeHaze, 0.86);
               float cosT = dot(rayDir, sDir);
               float g = 0.62;
               float hg = (1.0 - g * g) / pow(max(0.22, 1.0 + g * g - 2.0 * g * cosT), 1.5);
               float sunGlow = clamp((hg - 0.32) * 0.24, 0.0, 0.72);
+              float heavyS = smoothstep(0.48, 0.92, uSmokeHaze);
 
-              vec3 smokeCool = vec3(0.36, 0.36, 0.35);
-              vec3 smokeWarm = vec3(0.68, 0.45, 0.21);
-              vec3 smokeDense = vec3(0.64, 0.29, 0.09);
-              vec3 baseInscatter = mix(smokeCool, smokeWarm, clamp(0.24 + 0.56 * sunGlow + 0.34 * uSmokeHaze, 0.0, 1.0));
-              baseInscatter = mix(baseInscatter, smokeDense, clamp((uSmokeHaze - 0.55) * 0.85, 0.0, 0.52));
-              baseInscatter *= (1.0 - uCloudShadowAmt * 0.20);
-              vec3 nightInscatter = vec3(0.009, 0.010, 0.015);
+              vec3 smokePearl = vec3(0.49, 0.51, 0.52);
+              vec3 smokeCream = vec3(0.62, 0.55, 0.44);
+              vec3 smokeAmber = vec3(0.68, 0.37, 0.14);
+              vec3 baseInscatter = mix(smokePearl, smokeCream, clamp(0.22 + 0.52 * sunGlow + 0.42 * uSmokeHaze, 0.0, 1.0));
+              baseInscatter = mix(baseInscatter, smokeAmber, heavyS * 0.78);
+              baseInscatter *= (1.0 - uCloudShadowAmt * 0.18);
+              vec3 nightInscatter = vec3(0.009, 0.011, 0.016);
 
               float trans = 1.0;
               vec3 accumLight = vec3(0.0);
@@ -1232,10 +1256,10 @@ export class GlacierScene {
                 float hAbove = max(0.0, p.y - 0.04 * uExag);
                 float strat = exp(-hAbove / H);
                 vec2 nUv = p.xz * 0.24 - windDrift + vec2(p.y * 0.34, -p.y * 0.26);
-                float wisp = 0.66 + 0.54 * fbm2(nUv);
+                float wisp = 0.68 + 0.50 * fbm2(nUv);
                 float sigma = extBase * strat * wisp;
                 float stepT = exp(-sigma * stepLen);
-                float altLit = clamp(0.76 + 0.34 * (hAbove / max(yTop, 0.1)), 0.72, 1.12);
+                float altLit = clamp(0.84 + 0.26 * (hAbove / max(yTop, 0.1)), 0.80, 1.12);
                 vec3 stepCol = mix(nightInscatter, baseInscatter * altLit, uDaylight);
                 accumLight += trans * (1.0 - stepT) * stepCol;
                 trans *= stepT;
@@ -1866,8 +1890,8 @@ export class GlacierScene {
 
         void main() {
           vUv = uv;
-          float active = step(aSeed.x, clamp(uIntensity * 0.95, 0.0, 1.0));
-          if (active < 0.5 || uImmersion < 0.01 || uIntensity < 0.02) {
+          float isAct = step(aSeed.x, clamp(uIntensity * 0.95, 0.0, 1.0));
+          if (isAct < 0.5 || uImmersion < 0.01 || uIntensity < 0.02) {
             vAlpha = 0.0;
             gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
             return;
@@ -2080,10 +2104,10 @@ export class GlacierScene {
         varying float vRot;
 
         void main() {
-          float active = step(aSeed.x, clamp(uIntensity * 0.96, 0.0, 1.0));
+          float isAct = step(aSeed.x, clamp(uIntensity * 0.96, 0.0, 1.0));
           float isNear = aSeed.w;
           float scaleGate = isNear > 0.5 ? uImmersion : uMidVisible;
-          if (active < 0.5 || scaleGate < 0.01 || uIntensity < 0.02) {
+          if (isAct < 0.5 || scaleGate < 0.01 || uIntensity < 0.02) {
             vAlpha = 0.0;
             gl_PointSize = 0.0;
             gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
@@ -2185,11 +2209,11 @@ export class GlacierScene {
   _initCameraPresets() {
     // Exact Athabasca Glacier tongue AWS immersion height (~2,180 m -> ~0.31 km above 1,867 m min)
     const awsY0 = this._sampleDemXZ(1.15, -1.45);
-    // Exact Skaping Columbia Icefield webcam tripod GPS (52.220252 N, -117.224694 W -> x=+2.55, z=-3.14 km)
-    const webY0 = this._sampleDemXZ(2.55, -3.14);
+    // Exact Skaping Columbia Icefield Discovery Centre overlook (aimed SW over Lac Sunwapta -> Athabasca tongue -> Andromeda / Snow Dome!)
+    const webY0 = this._sampleDemXZ(2.82, -3.45);
     this.presets = {
       block:     { pos: new THREE.Vector3(9.4, 8.5, -10.3),  target: new THREE.Vector3(0.0, 0.55, 0.15),  fov: 38 },
-      webcam:    { pos: new THREE.Vector3(2.55, webY0 * 1.3 + 0.14, -3.14), target: new THREE.Vector3(2.35, webY0 * 1.3 + 0.72, 1.25), fov: 52 },
+      webcam:    { pos: new THREE.Vector3(2.82, webY0 * 1.3 + 0.16, -3.45), target: new THREE.Vector3(0.85, webY0 * 1.3 + 0.54, -0.25), fov: 54 },
       onglacier: { pos: new THREE.Vector3(1.15, awsY0 * 1.3 + 0.22, -1.45), target: new THREE.Vector3(-1.35, awsY0 * 1.3 + 0.72, 1.25), fov: 50 },
       flyover:   { pos: new THREE.Vector3(3.6, 2.35, -5.2),  target: new THREE.Vector3(-0.6, 1.05, 0.8),  fov: 44 },
       plateau:   { pos: new THREE.Vector3(-8.2, 7.6, 8.8),   target: new THREE.Vector3(-0.6, 1.05, 0.2),  fov: 38 },
@@ -2232,9 +2256,9 @@ export class GlacierScene {
     const awsY0 = this._sampleDemXZ(1.15, -1.45);
     this.presets.onglacier.pos.y = awsY0 * exag + 0.22;
     this.presets.onglacier.target.y = awsY0 * exag + 0.72;
-    const webY0 = this._sampleDemXZ(2.55, -3.14);
-    this.presets.webcam.pos.y = webY0 * exag + 0.14;
-    this.presets.webcam.target.y = webY0 * exag + 0.68;
+    const webY0 = this._sampleDemXZ(2.82, -3.45);
+    this.presets.webcam.pos.y = webY0 * exag + 0.16;
+    this.presets.webcam.target.y = webY0 * exag + 0.54;
   }
 
   _syncCloudCeiling() {
@@ -2445,17 +2469,18 @@ export class GlacierScene {
       this.ringUniforms.uWindDir.value.copy(this.terrainUniforms.uWindDir.value);
     }
 
-    // Warm golden daytime sunlight vs unmistakable cool indigo moonlit night!
-    const clearSun = new THREE.Color(0xffe08a);
-    const twilightSun = new THREE.Color(0xff8e32);
-    const smokySun = new THREE.Color(0xff8a2c);
-    const overcastSun = new THREE.Color(0xe6dcc8);
+    // Crisp natural alpine warm-white daylight vs cool indigo moonlit night (keeps Rockies limestone crisp slate-gray, never peanut-butter brown!)
+    const clearSun = new THREE.Color(0xfff4dc);
+    const twilightSun = new THREE.Color(0xff9036);
+    const smokySun = new THREE.Color(0xffa652);
+    const overcastSun = new THREE.Color(0xe6ecf4);
     const moonCol = new THREE.Color(0x527ec4);
 
+    const heavySmoke = Math.max(0.0, Math.min(1.0, (activeSmoke - 0.40) / 0.55));
     const sunCol = clearSun.clone()
-      .lerp(overcastSun, cloud * 0.48)
+      .lerp(overcastSun, cloud * 0.52)
       .lerp(twilightSun, twilight * 0.76)
-      .lerp(smokySun, activeSmoke * 0.56)
+      .lerp(smokySun, heavySmoke * 0.62)
       .lerp(moonCol, 1.0 - dayFactor);
 
     this.sunLight.color.copy(sunCol);

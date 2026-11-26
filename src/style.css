@@ -90,9 +90,9 @@ body.present-mode .hud-el { opacity: 0; pointer-events: none; transition: opacit
   vertical-align: middle; margin-left: 4px;
 }
 
-/* Top-Left Clean Single-Row Strip */
+/* Top-Left Compact Corner Stack (never overlaps top-right camera toolbar even at 1280px, keeps upper sky & sun 100% unobstructed!) */
 .hud-top-left { position: fixed; top: 14px; left: 16px; z-index: 16; }
-.top-left-strip { display: flex; align-items: center; gap: 8px; }
+.top-left-strip { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .brand-row {
   display: flex; align-items: center; gap: 9px; padding: 8px 11px; border-radius: var(--radius);
   background: var(--surface); border: 1px solid var(--border); backdrop-filter: blur(16px);

@@ -2,7 +2,7 @@ import "./style.css";
 import * as THREE from "three";
 import { GlacierScene } from "./glacierScene.js";
 
-const DATA_VER = "v2_hd_20261125";
+const DATA_VER = "prod_hd_20261125";
 
 const loader = document.getElementById("loader");
 const loaderSub = document.getElementById("loaderSub");
@@ -292,7 +292,7 @@ async function boot() {
     const assets = await loadAllAssets();
     const { meta, demU16, ringU16, rgbTex, maskTex, aoTex, ringAoTex } = assets;
 
-    loaderSub.textContent = "Initialisation de la scène 3D v2 HD…";
+    loaderSub.textContent = "Initialisation de la scène 3D HD…";
     const glacier = new GlacierScene(canvas, meta, demU16, rgbTex, maskTex, aoTex, ringU16, ringAoTex);
 
     const pins = meta.landmarks.map((lm) => {
@@ -581,7 +581,7 @@ async function boot() {
         const a = document.createElement("a");
         const ep = meta.episodes[currentEpId];
         const s = sampleSequenceAtStep(ep, currentT);
-        a.download = `athabasca_3d_v2_${s.date}_${formatHour(s.hour).replace(":", "h")}.${ext}`;
+        a.download = `athabasca_3d_${s.date}_${formatHour(s.hour).replace(":", "h")}.${ext}`;
         a.href = url;
         a.click();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
@@ -1025,7 +1025,7 @@ async function boot() {
       const ep = meta.episodes[currentEpId];
       const s = sampleSequenceAtStep(ep, currentT);
       const a = document.createElement("a");
-      a.download = `athabasca_3d_v2_${s.date}_${formatHour(s.hour).replace(":", "h")}.png`;
+      a.download = `athabasca_3d_${s.date}_${formatHour(s.hour).replace(":", "h")}.png`;
       a.href = glacier.capturePNG();
       a.click();
     });

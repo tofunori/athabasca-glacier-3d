@@ -410,9 +410,9 @@ export class GlacierScene {
           float trans = clamp(uSunTrans, 0.05, 1.0);
           // Crisp bright solar core shrinks/softens as clouds mask it; turns glowing ember red-orange in wildfire smoke!
           float coreSharp = mix(0.26, 0.14, uCloud * 0.8);
-          float core = smoothstep(coreSharp + 0.10, coreSharp * 0.35, r) * (0.28 + 0.95 * trans);
+          float core = (1.0 - smoothstep(coreSharp * 0.35, coreSharp + 0.10, r)) * (0.28 + 0.95 * trans);
           float corona = exp(-r * mix(3.4, 5.2, uCloud)) * (0.20 + 0.75 * trans);
-          float veilRing = smoothstep(0.55, 0.18, abs(r - 0.24)) * (uCloud * 0.25 + uSmoke * 0.22);
+          float veilRing = (1.0 - smoothstep(0.18, 0.55, abs(r - 0.24))) * (uCloud * 0.25 + uSmoke * 0.22);
 
           vec3 clearSun = vec3(1.0, 0.96, 0.80);
           vec3 smokeSun = vec3(1.0, 0.32, 0.08);
@@ -1234,7 +1234,7 @@ export class GlacierScene {
 
           // Soft radial horizontal and vertical envelope (zero rectangular edges)
           float envX = pow(sin(clamp(vUv.x, 0.0, 1.0) * 3.14159265), 1.75);
-          float envY = smoothstep(0.0, 0.12, vUv.y) * smoothstep(1.0, 0.72, vUv.y);
+          float envY = smoothstep(0.0, 0.12, vUv.y) * (1.0 - smoothstep(0.72, 1.0, vUv.y));
 
           float worldElevM = uZMinM + (vWorldPos.y / max(uExag, 0.1)) * 1000.0;
           float isSnowZone = smoothstep(uRainSnowM - 120.0, uRainSnowM + 140.0, worldElevM);
@@ -1529,8 +1529,8 @@ export class GlacierScene {
           if (vAlpha < 0.005) discard;
           // Smooth Gaussian cross-section across streak width + crisp droplet head tapering softly up the tail!
           float across = exp(-pow((vUv.x - 0.5) * 3.4, 2.0));
-          float along = smoothstep(0.0, 0.18, vUv.y) * smoothstep(1.0, 0.08, vUv.y);
-          float headGlint = smoothstep(0.35, 0.06, vUv.y) * 0.45;
+          float along = smoothstep(0.0, 0.18, vUv.y) * (1.0 - smoothstep(0.08, 1.0, vUv.y));
+          float headGlint = (1.0 - smoothstep(0.06, 0.35, vUv.y)) * 0.45;
           float a = across * (along + headGlint) * vAlpha;
           if (a < 0.004) discard;
           vec3 col = mix(vec3(0.64, 0.76, 0.88), vec3(0.92, 0.96, 1.0), 0.30 + 0.65 * uSunPower);

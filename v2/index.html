@@ -3,13 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Athabasca 3D v2 · Fumée radiative, nuages, forçage RF &amp; webcam</title>
-  <meta name="description" content="Observatoire 3D v2 du glacier Athabasca : transfert radiatif de fumée, ombres de nuages, horizon Rocheuses 35 km, forçage radiatif RF (W m⁻²), profil altitudinal en direct et webcam Skaping synchronisée." />
+  <title>Athabasca 3D v2 · Fumée volumétrique, nuages, neige &amp; webcam</title>
+  <meta name="description" content="Observatoire 3D v2 du glacier Athabasca : relief HD 448×448 + Rocheuses 35 km, fumée de feux ray-marchée en 3D, nuages volumétriques, lac animé et webcam Skaping synchronisée." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-  <script type="module" crossorigin src="./assets/index-DTZucXAd.js"></script>
-  <link rel="stylesheet" crossorigin href="./assets/index-EkpuxT9R.css">
+  <script type="module" crossorigin src="./assets/index-CCl2LY0b.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-C90RU5Jb.css">
 </head>
 <body>
   <div id="app">
@@ -28,7 +28,7 @@
     <!-- Minimal Presentation Mode HUD Pill (only visible when H / Presentation mode is active) -->
     <div id="presentBar" class="present-bar hidden">
       <span id="presentClock" class="present-clock">18 août · 12:30</span>
-      <span id="presentMeta" class="present-meta">RF +0 W m⁻²</span>
+      <span id="presentMeta" class="present-meta">Athabasca · 2 180 m</span>
       <button id="btnExitPresent" class="present-exit" title="Afficher l'interface (touche H)">Interface (H)</button>
     </div>
 
@@ -121,8 +121,8 @@
         <button class="pill-btn" data-preset="top">Carte</button>
       </div>
 
-      <button id="btnProfileToggle" class="pill-btn accent-outline active-cam" aria-pressed="true" title="Profil altitudinal, forçage radiatif RF et fonte supplémentaire">
-        Profil RF
+      <button id="btnHorizonToggle" class="pill-btn accent-outline" aria-pressed="false" title="Afficher en permanence le massif complet des Rocheuses (35 × 35 km) même en vue Bloc 3D">
+        Massif 35 km
       </button>
 
       <button id="btnWebcamToggle" class="pill-btn accent-outline active-cam" aria-pressed="true" title="Afficher ou masquer la webcam Skaping synchronisée">
@@ -151,40 +151,15 @@
       </div>
     </nav>
 
-    <!-- Left Live Scientific Panel: Altitudinal Profile + Radiative Forcing (RF) & Extra Melt -->
-    <aside id="profileCard" class="profile-card hud-el" aria-label="Profil altitudinal et forçage radiatif">
-      <div class="profile-head">
-        <span class="profile-title">Profil altitudinal &amp; RF</span>
-        <button id="btnQuickRfMode" class="wc-match-btn" title="Basculer la carte 3D sur le forçage radiatif RF (W m⁻²)">Carte RF</button>
-      </div>
-      <div class="rf-metrics">
-        <div class="rf-box">
-          <span class="rf-lbl">Forçage RF (−Δα·SW↓)</span>
-          <strong id="valRfNow" class="rf-val hot">+0,0 W m⁻²</strong>
-        </div>
-        <div class="rf-box" title="Proxy énergétique cumulé : Σ max(0, RF) × 3600 / Lf (Lf = 334 kJ kg⁻¹, si Ta > −2 °C)">
-          <span class="rf-lbl">Fonte + (proxy suie)</span>
-          <strong id="valExtraMelt" class="rf-val cyan">+0,0 mm éq.</strong>
-        </div>
-      </div>
-      <canvas id="profileCanvas" class="profile-canvas" width="244" height="162"></canvas>
-      <div class="profile-foot">
-        <span><i class="swatch temp"></i>T(z)</span>
-        <span><i class="swatch iso"></i>Iso. pluie/neige</span>
-        <span><i class="swatch rf"></i>RF (W m⁻²)</span>
-      </div>
-    </aside>
-
     <!-- Collapsible Right Settings & Live Weather Lab Drawer -->
     <aside id="settingsDrawer" class="drawer hidden hud-el" aria-label="Réglages 3D et laboratoire météo">
       <div class="drawer-section">
         <div class="section-label">Couche de surface</div>
         <div class="mode-grid" id="modeGrid">
           <button class="mode-btn active" data-mode="0">Satellite + météo</button>
-          <button class="mode-btn rf-mode-btn" data-mode="1">Forçage RF (W m⁻²)</button>
-          <button class="mode-btn" data-mode="2">Dépôt (mg m⁻²)</button>
-          <button class="mode-btn" data-mode="3">Glace / Neige</button>
-          <button class="mode-btn" data-mode="4">Maquette relief</button>
+          <button class="mode-btn" data-mode="1">Dépôt (mg m⁻²)</button>
+          <button class="mode-btn" data-mode="2">Glace / Neige</button>
+          <button class="mode-btn" data-mode="3">Maquette relief</button>
         </div>
       </div>
 
@@ -358,7 +333,6 @@
           <div class="chart-tabs" id="chartTabs" role="tablist" aria-label="Variable du graphique">
             <button class="ctab active" data-metric="precip">Pluie/Neige</button>
             <button class="ctab" data-metric="depRate">Dépôt</button>
-            <button class="ctab" data-metric="rf">RF</button>
             <button class="ctab" data-metric="pm25">PM2,5</button>
             <button class="ctab" data-metric="sw">SW↓</button>
             <button class="ctab" data-metric="ta">Temp.</button>
@@ -415,10 +389,10 @@
           <button id="btnCloseInfo" class="icon-btn" aria-label="Fermer">×</button>
         </div>
         <div class="modal-body">
-          <p><strong>Glacier Athabasca</strong> (<code>RGI2000-v7.0-G-02-12982</code>, 16,15 km², 1 965 – 3 456 m, 66 pixels MODIS) entouré d'une couronne Copernicus GLO-30 de <strong>35 × 35 km</strong> dans les Rocheuses canadiennes (<code>02-03</code>).</p>
+          <p><strong>Glacier Athabasca</strong> (<code>RGI2000-v7.0-G-02-12982</code>, 16,15 km², 1 965 – 3 456 m, MNT HD <strong>448×448</strong> ~25 m) entouré d'une couronne Copernicus GLO-30 de <strong>35 × 35 km</strong> (<code>320×320</code>) dans les Rocheuses canadiennes (<code>02-03</code>).</p>
           <ul>
-            <li><strong>Fumée radiative analytique</strong> : intégration exacte Beer-Lambert d'un profil exponentiel piégé en vallée + diffusion Mie de Henyey-Greenstein vers le soleil, sans couches superposées artificielles.</li>
-            <li><strong>Forçage radiatif (<code>RF = −Δα × SW↓</code>, W m⁻²) et proxy fonte</strong> : la couche <em>Forçage RF</em> module l'énergie solaire supplémentaire absorbée par la suie selon le cycle solaire horaire, les ombres de nuages et le réinitialisation par neige fraîche ; le compteur <em>Fonte +</em> convertit ce flux via la chaleur latente de fusion (<code>Lf = 334 kJ kg⁻¹</code>, proxy illustratif).</li>
+            <li><strong>Fumée volumétrique 3D ray-marchée</strong> : intégration volumétrique à 8 pas en espace linéaire (Beer-Lambert + diffusion Mie Henyey-Greenstein + turbulence de vallée advectée par le vent + perspective aérienne Rayleigh), zéro nappe artificielle.</li>
+            <li><strong>Rendu alpin HD</strong> : occlusion ambiante topographique sur 16 azimuts (Sky-View Factor), micro-normales procédurales (strates calcaires, ogives glaciaires, sastrugis neigeux, vagues multi-octaves du lac Sunwapta), diffusion sous-surface de la glace vive, nuages 3D multi-lobes (96 bouffées) avec ombres mobiles et fonte différentielle selon l'exposition sud/nord.</li>
             <li><strong>Archives horaires exactes NAS (2018 · 2021 · 2023)</strong> : <code>RAQDPS FireWork − noFire</code> (<code>DEC+WEC+DPOM+DSOM+WPOM+WSOM</code>, <code>D002</code>, parité DuckDB ≤ 8×10⁻¹⁶, MDT) + météo ERA5 / AWS 2018 + 720 photos horaires Skaping (Pursuit).</li>
           </ul>
           <p id="modalProvenance" class="modal-note"></p>
